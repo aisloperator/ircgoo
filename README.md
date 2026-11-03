@@ -33,6 +33,8 @@ chat, and the main menu sits in the same row.
 - Selectable, copyable message text with mIRC colours and formatting. Every line starts
   with the local time (`hh:mm:ss`).
 - Nick and channel completion with Tab, plus per-tab input history.
+- Hovering a tab shows its network, the server's host and port, and "TLS" when the
+  connection uses TLS. With a bouncer, the bouncer's address is shown.
 
 Logging is intentionally not implemented yet.
 

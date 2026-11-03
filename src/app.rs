@@ -165,6 +165,8 @@ struct Session {
     user_joins: HashSet<String>,
     /// Last reply time per CTCP command, for flood protection.
     last_ctcp_reply: HashMap<&'static str, Instant>,
+    /// Host, port and TLS of the server (or bouncer) last connected to.
+    endpoint: Option<(String, u16, bool)>,
 }
 
 impl Session {
@@ -195,6 +197,7 @@ impl Session {
             whois_cache: HashMap::new(),
             user_joins: HashSet::new(),
             last_ctcp_reply: HashMap::new(),
+            endpoint: None,
         }
     }
 
@@ -934,6 +937,19 @@ impl App {
     }
 
     fn wire_tab(&self, tab: &Rc<Tab>) {
+        tab.label.set_has_tooltip(true);
+        let w = Rc::downgrade(tab);
+        tab.label.connect_query_tooltip(move |_, _, _, _, tooltip| {
+            let (Some(a), Some(t)) = (current(), w.upgrade()) else {
+                return false;
+            };
+            let Some(text) = a.tab_tooltip(&t) else {
+                return false;
+            };
+            tooltip.set_text(Some(&text));
+            true
+        });
+
         let w = Rc::downgrade(tab);
         tab.entry.connect_activate(move |_| {
             if let (Some(a), Some(t)) = (current(), w.upgrade()) {
@@ -1497,6 +1513,30 @@ impl App {
         }
     }
 
+    /// Network name, then the server's host:port and "TLS", one per line.
+    fn tab_tooltip(&self, tab: &Rc<Tab>) -> Option<String> {
+        let net = tab.network()?;
+        let sessions = self.sessions.try_borrow().ok()?;
+        let Some(s) = sessions.iter().find(|s| s.name.eq_ignore_ascii_case(&net)) else {
+            return Some(format!("{net}\nNot connected"));
+        };
+        let mut text = s.name.clone();
+        match (&s.state, &s.endpoint) {
+            (ConnState::Disconnected, _) | (_, None) => text.push_str("\nNot connected"),
+            (state, Some((host, port, tls))) => {
+                text.push('\n');
+                text.push_str(&crate::config::describe_addr(host, *port, false));
+                if *tls {
+                    text.push_str("\nTLS");
+                }
+                if matches!(state, ConnState::Connecting | ConnState::Registering) {
+                    text.push_str("\nConnecting…");
+                }
+            }
+        }
+        Some(text)
+    }
+
     fn with_session_quiet<R>(&self, tab: &Rc<Tab>, f: impl FnOnce(&Session) -> R) -> Option<R> {
         let net = tab.network()?;
         let sessions = self.sessions.borrow();
@@ -1926,6 +1966,7 @@ impl App {
                 client_cert,
             },
         };
+        s.endpoint = Some((params.host.clone(), params.port, params.tls));
         let id = self.new_id();
         s.conn_id = id;
         s.sasl_current = sasl;
