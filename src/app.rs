@@ -163,7 +163,8 @@ struct Session {
     whois_partial: HashMap<String, WhoisInfo>,
     whois_cache: HashMap<String, WhoisInfo>,
     user_joins: HashSet<String>,
-    last_ctcp_reply: Option<Instant>,
+    /// Last reply time per CTCP command, for flood protection.
+    last_ctcp_reply: HashMap<&'static str, Instant>,
 }
 
 impl Session {
@@ -193,7 +194,7 @@ impl Session {
             whois_partial: HashMap::new(),
             whois_cache: HashMap::new(),
             user_joins: HashSet::new(),
-            last_ctcp_reply: None,
+            last_ctcp_reply: HashMap::new(),
         }
     }
 
@@ -2603,7 +2604,7 @@ impl App {
                     ],
                     None,
                 );
-                self.ctcp_reply(s, &from, &ctcp);
+                self.ctcp_reply(s, &from, &ctcp, args);
             }
             return;
         }
@@ -2650,13 +2651,24 @@ impl App {
         }
     }
 
-    /// Only CTCP VERSION is answered, with the bare client name (no version number).
-    fn ctcp_reply(&self, s: &mut Session, to: &str, ctcp: &str) {
-        if ctcp != "VERSION" || s.last_ctcp_reply.is_some_and(|t| t.elapsed() < Duration::from_secs(2)) {
+    /// Answers CTCP VERSION with the bare client name (no version number) and CTCP PING by
+    /// echoing its argument back. Other CTCP requests are not answered. Each command gets at
+    /// most one reply every 2 seconds.
+    fn ctcp_reply(&self, s: &mut Session, to: &str, ctcp: &str, args: &str) {
+        let (cmd, body) = match ctcp {
+            "VERSION" => ("VERSION", "VERSION IrcGoo".to_string()),
+            "PING" if args.is_empty() => ("PING", "PING".to_string()),
+            "PING" => ("PING", format!("PING {args}")),
+            _ => return,
+        };
+        if s.last_ctcp_reply
+            .get(cmd)
+            .is_some_and(|t| t.elapsed() < Duration::from_secs(2))
+        {
             return;
         }
-        s.last_ctcp_reply = Some(Instant::now());
-        s.send(&irc::build("NOTICE", &[to, "\x01VERSION IrcGoo\x01"]));
+        s.last_ctcp_reply.insert(cmd, Instant::now());
+        s.send(&irc::build("NOTICE", &[to, &format!("\x01{body}\x01")]));
     }
 
     fn handle_whois(&self, s: &mut Session, m: &Message) {
