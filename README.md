@@ -40,8 +40,9 @@ Logging is intentionally not implemented yet.
 
 Requirements:
 
-- Rust 1.85 or newer (for example via [rustup](https://rustup.rs/)). Debian's packaged
-  Rust is fine on Debian 13; Debian 12 and PureOS need a newer toolchain.
+- Rust 1.92 or newer, required by the `gtk4` crate. Debian 13, Debian 12 and PureOS
+  package older versions, so install a current toolchain with
+  [rustup](https://rustup.rs/).
 - GTK 4.8 or newer with development files, `pkg-config`, and a C compiler. On Debian:
 
   ```sh

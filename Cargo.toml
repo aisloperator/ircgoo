@@ -2,14 +2,15 @@
 name = "ircgoo"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.92"
 description = "IrcGoo, a spartan, keyboard-driven IRC client for Linux desktops"
 authors = ["AI Sloperator"]
 homepage = "https://www.aisloperator.com/"
 publish = false
 
 [dependencies]
-# Only GTK4 is enabled up to the 4.8 API, so IrcGoo builds against Debian bookworm / PureOS.
+# Only GTK APIs up to 4.8 are enabled, so IrcGoo builds against the GTK in Debian bookworm / PureOS.
+# gtk4 0.11 needs Rust 1.92 (see rust-version).
 gtk = { version = "0.11.5", package = "gtk4", features = ["v4_8"] }
 # Pure-Rust TLS with the ring backend (needs only a C compiler, no OpenSSL headers).
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
