@@ -553,10 +553,15 @@ impl App {
             });
             self.gtk_app.add_action(&action);
         }
-        let win_actions: [(&str, ActionFn); 4] = [
+        let win_actions: [(&str, ActionFn); 5] = [
             ("close-tab", |a| {
                 if let Some(t) = a.current_tab() {
                     a.close_tab(&t);
+                }
+            }),
+            ("clear", |a| {
+                if let Some(t) = a.current_tab() {
+                    t.clear();
                 }
             }),
             ("next-tab", |a| a.cycle_tab(true)),
@@ -603,8 +608,13 @@ impl App {
             ("app.quit", &["<Ctrl>q"]),
             ("app.preferences", &["<Ctrl>comma"]),
             ("win.close-tab", &["<Ctrl>w"]),
-            ("win.next-tab", &["<Ctrl>Page_Down", "<Alt>Right"]),
-            ("win.prev-tab", &["<Ctrl>Page_Up", "<Alt>Left"]),
+            ("win.clear", &["<Ctrl>l"]),
+            // Like Firefox. With Shift held, X11 and Wayland report Tab as ISO_Left_Tab.
+            ("win.next-tab", &["<Ctrl>Page_Down", "<Ctrl>Tab"]),
+            (
+                "win.prev-tab",
+                &["<Ctrl>Page_Up", "<Ctrl><Shift>Tab", "<Ctrl><Shift>ISO_Left_Tab"],
+            ),
             ("win.menu", &["F10"]),
             ("win.nicklist", &["<Ctrl><Shift>l"]),
         ];

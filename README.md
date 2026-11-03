@@ -84,9 +84,10 @@ size). Preferences can set a fixed size instead.
 |---|---|
 | F10 | Main menu |
 | Alt+1 … Alt+0 | Go to tab 1–10 |
-| Ctrl+Page Down / Alt+Right | Next tab |
-| Ctrl+Page Up / Alt+Left | Previous tab |
+| Ctrl+Page Down / Ctrl+Tab | Next tab |
+| Ctrl+Page Up / Ctrl+Shift+Tab | Previous tab |
 | Ctrl+W | Close tab |
+| Ctrl+L | Clear the tab's messages (like `/clear`) |
 | Ctrl+Shift+L | Show or hide the nick list |
 | Ctrl+, | Preferences |
 | Ctrl+Q | Quit |
