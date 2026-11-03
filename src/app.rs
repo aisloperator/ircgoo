@@ -355,6 +355,12 @@ fn split_message(text: &str, max: usize) -> Vec<String> {
 const GNOME_INTERFACE: &str = "org.gnome.desktop.interface";
 const GNOME_MONO_KEY: &str = "monospace-font-name";
 
+/// True when `XDG_CURRENT_DESKTOP` lists GNOME (for example "GNOME", "ubuntu:GNOME" or
+/// "Phosh:GNOME").
+fn is_gnome_session() -> bool {
+    std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|v| v.split(':').any(|d| d.eq_ignore_ascii_case("GNOME")))
+}
+
 fn gnome_interface_settings() -> Option<gio::Settings> {
     let schema = gio::SettingsSchemaSource::default()?.lookup(GNOME_INTERFACE, true)?;
     schema
@@ -677,12 +683,16 @@ impl App {
 
     // ----- message font size -----------------------------------------------------------------
 
-    /// The desktop's monospace font size in points: GNOME's monospace font setting when
-    /// available, otherwise GTK's default font size.
+    /// The desktop's monospace font size in points. GNOME's monospace font setting is used
+    /// when it reflects a real choice: in a GNOME session, or when it was set explicitly.
+    /// Its schema is installed on most systems even without GNOME, and its built-in default
+    /// ("Monospace 11") would otherwise override other desktops. In every other case this is
+    /// GTK's default font size.
     pub fn desktop_mono_font_size(&self) -> Option<f64> {
         let gnome = self
             .desktop_settings
             .as_ref()
+            .filter(|s| is_gnome_session() || s.user_value(GNOME_MONO_KEY).is_some())
             .and_then(|s| font_size_pt(&s.string(GNOME_MONO_KEY)));
         gnome.or_else(|| {
             gtk::Settings::default()
