@@ -4,6 +4,7 @@ use crate::irc::{self, Style};
 use gtk::prelude::*;
 use gtk::{gdk, glib, pango};
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 /// Lines kept per tab; older lines are trimmed (logging will be a separate feature).
 const MAX_LINES: usize = 5000;
@@ -79,6 +80,8 @@ pub struct Tab {
     pub buffer: gtk::TextBuffer,
     pub scroller: gtk::ScrolledWindow,
     end_mark: gtk::TextMark,
+    /// Whether the view should stay scrolled to the end: true until the user scrolls away from it.
+    follow_end: Rc<Cell<bool>>,
     pub nick_label: gtk::Label,
     pub lag_label: gtk::Label,
     pub entry: gtk::Entry,
@@ -188,6 +191,56 @@ pub fn now_hms() -> String {
         .unwrap_or_else(|| "--:--:--".into())
 }
 
+fn at_end(adj: &gtk::Adjustment) -> bool {
+    adj.value() + adj.page_size() >= adj.upper() - 8.0
+}
+
+/// Keep `follow` up to date and keep the view at the end while it is set.
+///
+/// The adjustment's value changes both when the user scrolls and when GTK
+/// lays the text out again for a new geometry (window resize, rewrapped lines,
+/// the nick list shown or hidden, a tab shown for the first time after a
+/// resize). While such a relayout is in progress, GtkTextView also restores
+/// its own earlier offset, which would look like the user scrolling. So after
+/// any change of the content height or page size, value changes are ignored
+/// until the main loop is idle (text validation runs at a higher priority);
+/// then the view returns to the end if it was following it. Other value
+/// changes are the user scrolling and decide whether to follow the end.
+fn track_follow_end(adj: &gtk::Adjustment, follow: &Rc<Cell<bool>>) {
+    let geometry = Rc::new(Cell::new((adj.upper(), adj.page_size())));
+    let settling = Rc::new(Cell::new(false));
+    let relayout = {
+        let follow = follow.clone();
+        let geometry = geometry.clone();
+        let settling = settling.clone();
+        move |adj: &gtk::Adjustment| {
+            geometry.set((adj.upper(), adj.page_size()));
+            if settling.replace(true) {
+                return;
+            }
+            let (adj, follow, settling) = (adj.clone(), follow.clone(), settling.clone());
+            glib::idle_add_local_full(glib::Priority::LOW, move || {
+                settling.set(false);
+                if follow.get() && !at_end(&adj) {
+                    adj.set_value(adj.upper() - adj.page_size());
+                }
+                glib::ControlFlow::Break
+            });
+        }
+    };
+    let relayout = Rc::new(relayout);
+    let r = relayout.clone();
+    adj.connect_changed(move |adj| r(adj));
+    let follow = follow.clone();
+    adj.connect_value_changed(move |adj| {
+        if geometry.get() != (adj.upper(), adj.page_size()) {
+            relayout(adj);
+        } else if !settling.get() {
+            follow.set(at_end(adj));
+        }
+    });
+}
+
 impl Tab {
     pub fn new(kind: TabKind, nicklist_visible: bool) -> Tab {
         let buffer = TAG_TABLE.with(|t| gtk::TextBuffer::new(Some(t)));
@@ -209,6 +262,8 @@ impl Tab {
             .child(&view)
             .build();
         let end_mark = buffer.create_mark(Some("end"), &buffer.end_iter(), false);
+        let follow_end = Rc::new(Cell::new(true));
+        track_follow_end(&scroller.vadjustment(), &follow_end);
 
         let nicklist = matches!(kind, TabKind::Channel(..)).then(|| {
             let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).build();
@@ -279,6 +334,7 @@ impl Tab {
             buffer,
             scroller,
             end_mark,
+            follow_end,
             nick_label,
             lag_label,
             entry,
@@ -312,8 +368,6 @@ impl Tab {
 
     /// Append one line, prefixed with the local time.
     pub fn line(&self, parts: &[Part], line_tag: Option<&str>) {
-        let adj = self.scroller.vadjustment();
-        let at_bottom = adj.value() + adj.page_size() >= adj.upper() - 8.0;
         let buf = &self.buffer;
         let mut iter = buf.end_iter();
         let line_start = iter.offset();
@@ -357,7 +411,7 @@ impl Tab {
                 self.lines.set(MAX_LINES);
             }
         }
-        if at_bottom {
+        if self.follow_end.get() {
             buf.move_mark(&self.end_mark, &buf.end_iter());
             self.view.scroll_mark_onscreen(&self.end_mark);
         }
@@ -366,6 +420,7 @@ impl Tab {
     pub fn clear(&self) {
         self.buffer.set_text("");
         self.lines.set(0);
+        self.follow_end.set(true);
     }
 
     pub fn scroll_page(&self, down: bool) {
