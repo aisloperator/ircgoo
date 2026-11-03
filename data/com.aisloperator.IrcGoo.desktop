@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=IrcGoo
+Comment=Chat on IRC networks
+Exec=ircgoo
+Icon=internet-chat
+Terminal=false
+Categories=Network;Chat;IRCClient;GTK;
+Keywords=IRC;chat;
+StartupNotify=true
+X-Purism-FormFactor=Workstation;Mobile;
