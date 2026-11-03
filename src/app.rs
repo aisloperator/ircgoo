@@ -483,6 +483,7 @@ pub fn activate(gtk_app: &gtk::Application) {
     app.setup_actions();
     app.rebuild_connect_menu();
     app.setup_font_size();
+    crate::theme::follow_desktop(crate::tab::set_dark_palette);
     app.notebook.connect_switch_page(|_, page, _| {
         let page = page.clone();
         glib::idle_add_local_once(move || {

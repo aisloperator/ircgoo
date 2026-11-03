@@ -7,6 +7,7 @@ mod net;
 mod prefs;
 mod socks;
 mod tab;
+mod theme;
 mod tls;
 
 use gtk::glib;

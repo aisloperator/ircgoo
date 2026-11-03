@@ -9,9 +9,26 @@ use std::rc::Rc;
 /// Lines kept per tab; older lines are trimmed (logging will be a separate feature).
 const MAX_LINES: usize = 5000;
 
+/// Nick colours for light themes.
 const NICK_COLORS: [&str; 12] = [
     "#c01c28", "#26a269", "#1c71d8", "#a347ba", "#e66100", "#2190a4", "#9c6e03", "#c64600", "#3a8f3a", "#813d9c",
     "#0e7d8c", "#b5835a",
+];
+/// The same hues, lightened for dark themes.
+const NICK_COLORS_DARK: [&str; 12] = [
+    "#f66151", "#57e389", "#62a0ea", "#dc8add", "#ffa348", "#5ec7d9", "#e5c64f", "#ff8c5a", "#8ff0a4", "#c88fe0",
+    "#4fd1c5", "#d9b38c",
+];
+
+/// Text tags with their light-theme and dark-theme foreground colours.
+const TAG_COLORS: [(&str, &str, &str); 7] = [
+    ("time", "#888888", "#9a9996"),
+    ("marker", "#3584e4", "#78aeed"),
+    ("dim", "#888888", "#9a9996"),
+    ("error", "#e01b24", "#ff7b63"),
+    ("join", "#26a269", "#57e389"),
+    ("part", "#c64600", "#ff8c5a"),
+    ("notice", "#a347ba", "#dc8add"),
 ];
 
 const MIRC_COLORS: [&str; 16] = [
@@ -113,13 +130,9 @@ fn build_tag_table() -> gtk::TextTagTable {
     let add = |tag: gtk::TextTag| {
         table.add(&tag);
     };
-    add(gtk::TextTag::builder().name("time").foreground("#888888").build());
-    add(gtk::TextTag::builder().name("marker").foreground("#3584e4").build());
-    add(gtk::TextTag::builder().name("dim").foreground("#888888").build());
-    add(gtk::TextTag::builder().name("error").foreground("#e01b24").build());
-    add(gtk::TextTag::builder().name("join").foreground("#26a269").build());
-    add(gtk::TextTag::builder().name("part").foreground("#c64600").build());
-    add(gtk::TextTag::builder().name("notice").foreground("#a347ba").build());
+    for (name, light, _) in TAG_COLORS {
+        add(gtk::TextTag::builder().name(name).foreground(light).build());
+    }
     add(gtk::TextTag::builder().name("own").weight(700).build());
     add(gtk::TextTag::builder()
         .name("highlight")
@@ -142,6 +155,25 @@ fn build_tag_table() -> gtk::TextTagTable {
         add(gtk::TextTag::builder().name(format!("bg{i}")).background(*c).build());
     }
     table
+}
+
+/// Switch the shared text tags between colours for light and dark themes. mIRC colour
+/// codes are left alone: they are absolute colours chosen by the sender.
+pub fn set_dark_palette(dark: bool) {
+    TAG_TABLE.with(|table| {
+        let set = |name: &str, color: &str| {
+            if let Some(tag) = table.lookup(name) {
+                tag.set_foreground(Some(color));
+            }
+        };
+        for (name, light, dark_color) in TAG_COLORS {
+            set(name, if dark { dark_color } else { light });
+        }
+        let nick_colors = if dark { &NICK_COLORS_DARK } else { &NICK_COLORS };
+        for (i, c) in nick_colors.iter().enumerate() {
+            set(&format!("nick{i}"), c);
+        }
+    });
 }
 
 pub fn nick_tag(nick: &str) -> String {

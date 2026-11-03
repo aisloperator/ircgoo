@@ -80,6 +80,11 @@ The message text uses a monospace font. Its size follows the desktop's monospace
 by default (GNOME's monospace font setting when available, otherwise GTK's default font
 size). Preferences can set a fixed size instead.
 
+IrcGoo follows the desktop's light or dark preference and switches when it changes. The
+preference comes from the freedesktop settings portal (used by GNOME, KDE and others), or
+from GNOME's color scheme setting when no portal provides it. Nick colours change with
+it; colours that other users put in their messages (mIRC colour codes) do not.
+
 ## Keyboard
 
 | Key | Action |
