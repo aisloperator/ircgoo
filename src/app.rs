@@ -2603,7 +2603,7 @@ impl App {
                     ],
                     None,
                 );
-                self.ctcp_reply(s, &from, &ctcp, args);
+                self.ctcp_reply(s, &from, &ctcp);
             }
             return;
         }
@@ -2650,24 +2650,13 @@ impl App {
         }
     }
 
-    fn ctcp_reply(&self, s: &mut Session, to: &str, ctcp: &str, args: &str) {
-        if s.last_ctcp_reply.is_some_and(|t| t.elapsed() < Duration::from_secs(2)) {
+    /// Only CTCP VERSION is answered, with the bare client name (no version number).
+    fn ctcp_reply(&self, s: &mut Session, to: &str, ctcp: &str) {
+        if ctcp != "VERSION" || s.last_ctcp_reply.is_some_and(|t| t.elapsed() < Duration::from_secs(2)) {
             return;
         }
-        let reply = match ctcp {
-            "VERSION" => Some(format!("IrcGoo {VERSION} {WEBSITE}")),
-            "PING" => Some(args.to_string()),
-            "TIME" => glib::DateTime::now_local()
-                .ok()
-                .and_then(|d| d.format("%a %b %d %H:%M:%S %Y").ok())
-                .map(|s| s.to_string()),
-            "CLIENTINFO" => Some("ACTION CLIENTINFO PING TIME VERSION".into()),
-            _ => None,
-        };
-        if let Some(r) = reply {
-            s.last_ctcp_reply = Some(Instant::now());
-            s.send(&irc::build("NOTICE", &[to, &format!("\x01{ctcp} {r}\x01")]));
-        }
+        s.last_ctcp_reply = Some(Instant::now());
+        s.send(&irc::build("NOTICE", &[to, "\x01VERSION IrcGoo\x01"]));
     }
 
     fn handle_whois(&self, s: &mut Session, m: &Message) {
