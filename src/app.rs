@@ -64,7 +64,7 @@ const HELP: &[(&str, &str)] = &[
     ("/quit [reason]", "Disconnect from this tab's network"),
     ("/exit", "Quit IrcGoo"),
     ("/quote /raw <line>", "Send a raw protocol line"),
-    ("/clear", "Clear this tab's messages"),
+    ("/clear /c", "Clear this tab's messages"),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1375,7 +1375,7 @@ impl App {
             }
             "network" | "net" => self.network_command(tab, &args, rest),
             "server" => self.server_command(tab, &args),
-            "clear" => tab.clear(),
+            "clear" | "c" => tab.clear(),
             _ => {
                 // Unknown commands are passed to the server, as most clients do.
                 let connected = self.with_session_quiet(tab, |s| s.connected()).unwrap_or(false);

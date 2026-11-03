@@ -119,7 +119,7 @@ Typing while the message area has focus goes to the input field.
 | `/quit [reason]` | Disconnect from this tab's network |
 | `/exit` | Quit IrcGoo |
 | `/quote` `/raw <line>` | Send a raw protocol line |
-| `/clear` | Clear the tab |
+| `/clear` `/c` | Clear the tab |
 | `/help` | List commands |
 
 Other `/commands` are sent to the server as-is. Start a line with `//` to send a
