@@ -1,7 +1,7 @@
 //! Settings windows. Unlike the main window these use a conventional dialog layout.
 
 use crate::app::App;
-use crate::config::{Bouncer, Network, Sasl, SaslMech, Server};
+use crate::config::{Bouncer, MAX_FONT_SIZE, MIN_FONT_SIZE, Network, Sasl, SaslMech, Server};
 use gtk::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -30,6 +30,16 @@ fn hint(text: &str) -> gtk::Label {
     let l = gtk::Label::builder().label(wrapped).xalign(0.0).build();
     l.add_css_class("dim-label");
     l
+}
+
+/// "11" or "10.5": point sizes without a needless ".0".
+fn fmt_pt(pt: f64) -> String {
+    let r = (pt * 10.0).round() / 10.0;
+    if r.fract() == 0.0 {
+        format!("{r:.0}")
+    } else {
+        format!("{r:.1}")
+    }
 }
 
 fn grid() -> gtk::Grid {
@@ -200,6 +210,39 @@ pub fn show_preferences(app: &Rc<App>) {
     sync(cfg.proxy.enabled);
     proxy_on.connect_toggled(move |b| sync(b.is_active()));
 
+    let msg_title = gtk::Label::builder()
+        .label("<b>Messages</b>")
+        .use_markup(true)
+        .xalign(0.0)
+        .margin_top(12)
+        .build();
+    g.attach(&msg_title, 0, 12, 2, 1);
+    let desktop_size = app.desktop_mono_font_size();
+    let default_label = match desktop_size {
+        Some(pt) => format!("Use the desktop's monospace font size ({} pt)", fmt_pt(pt)),
+        None => "Use the desktop's monospace font size".to_string(),
+    };
+    let font_default = gtk::CheckButton::with_label(&default_label);
+    font_default.set_active(cfg.message_font_size.is_none());
+    g.attach(&font_default, 0, 13, 2, 1);
+    let font_size = gtk::SpinButton::with_range(f64::from(MIN_FONT_SIZE), f64::from(MAX_FONT_SIZE), 1.0);
+    font_size.set_digits(0);
+    font_size.set_value(
+        cfg.message_font_size
+            .map(f64::from)
+            .or(desktop_size)
+            .unwrap_or(11.0)
+            .round(),
+    );
+    font_size.set_sensitive(cfg.message_font_size.is_some());
+    let size_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    size_box.append(&font_size);
+    size_box.append(&gtk::Label::new(Some("points")));
+    g.attach(&label("Font size"), 0, 14, 1, 1);
+    g.attach(&size_box, 1, 14, 1, 1);
+    let fs = font_size.clone();
+    font_default.connect_toggled(move |b| fs.set_sensitive(!b.is_active()));
+
     window.set_child(Some(&g));
 
     let app_w = Rc::downgrade(app);
@@ -218,6 +261,7 @@ pub fn show_preferences(app: &Rc<App>) {
             c.proxy.port = pport.value_as_int() as u16;
             c.proxy.username = puser.text().to_string();
             c.proxy.password = ppass.text().to_string();
+            c.message_font_size = (!font_default.is_active()).then(|| font_size.value_as_int() as u32);
         });
         match res {
             Ok(()) => win.close(),

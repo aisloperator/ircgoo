@@ -74,6 +74,10 @@ writes it with mode 0600 in a 0700 directory. On first run it creates a configur
 with your login name as nick and a Libera.Chat network that does not connect
 automatically.
 
+The message text uses a monospace font. Its size follows the desktop's monospace font size
+by default (GNOME's monospace font setting when available, otherwise GTK's default font
+size). Preferences can set a fixed size instead.
+
 ## Keyboard
 
 | Key | Action |

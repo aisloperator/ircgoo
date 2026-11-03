@@ -178,9 +178,14 @@ pub struct Config {
     pub nick: String,
     pub username: String,
     pub realname: String,
+    /// Message font size in points; `None` follows the desktop's monospace font size.
+    pub message_font_size: Option<u32>,
     pub proxy: Proxy,
     pub networks: Vec<Network>,
 }
+
+pub const MIN_FONT_SIZE: u32 = 6;
+pub const MAX_FONT_SIZE: u32 = 72;
 
 fn sanitize_nick(s: &str) -> String {
     let n: String = s
@@ -218,6 +223,7 @@ impl Config {
             username: nick.to_ascii_lowercase(),
             nick,
             realname,
+            message_font_size: None,
             proxy: Proxy::default(),
             networks: vec![Network {
                 name: "Libera.Chat".into(),
@@ -246,6 +252,11 @@ impl Config {
             nick: or_default(gs(&kf, g, "nick"), &d.nick),
             username: or_default(gs(&kf, g, "username"), &d.username),
             realname: or_default(gs(&kf, g, "realname"), &d.realname),
+            message_font_size: kf
+                .integer(g, "message_font_size")
+                .ok()
+                .and_then(|v| u32::try_from(v).ok())
+                .filter(|v| (MIN_FONT_SIZE..=MAX_FONT_SIZE).contains(v)),
             proxy: Proxy {
                 enabled: gb(&kf, "Proxy", "enabled", false),
                 host: or_default(gs(&kf, "Proxy", "host"), "127.0.0.1"),
@@ -316,6 +327,8 @@ impl Config {
         kf.set_string(g, "nick", &self.nick);
         kf.set_string(g, "username", &self.username);
         kf.set_string(g, "realname", &self.realname);
+        // 0 means "use the desktop default".
+        kf.set_integer(g, "message_font_size", self.message_font_size.map_or(0, |v| v as i32));
         let p = "Proxy";
         kf.set_boolean(p, "enabled", self.proxy.enabled);
         kf.set_string(p, "host", &self.proxy.host);
@@ -449,6 +462,7 @@ mod tests {
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
         let mut cfg = Config::new_default();
         cfg.proxy.enabled = true;
+        cfg.message_font_size = Some(13);
         cfg.networks.push(Network {
             name: "Test Net".into(),
             autoconnect: true,

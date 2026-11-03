@@ -290,6 +290,10 @@ pub struct App {
     pub prefs_window: RefCell<Option<gtk::Window>>,
     pub networks_window: RefCell<Option<Rc<crate::prefs::NetworksWindow>>>,
     quitting: Cell<bool>,
+    /// Holds the message font size rule; empty when following the desktop default.
+    font_css: gtk::CssProvider,
+    /// GNOME's interface settings, when installed (source of the monospace font size).
+    desktop_settings: Option<gio::Settings>,
 }
 
 thread_local! {
@@ -346,6 +350,24 @@ fn split_message(text: &str, max: usize) -> Vec<String> {
     }
     out.push(rest.to_string());
     out
+}
+
+const GNOME_INTERFACE: &str = "org.gnome.desktop.interface";
+const GNOME_MONO_KEY: &str = "monospace-font-name";
+
+fn gnome_interface_settings() -> Option<gio::Settings> {
+    let schema = gio::SettingsSchemaSource::default()?.lookup(GNOME_INTERFACE, true)?;
+    schema
+        .has_key(GNOME_MONO_KEY)
+        .then(|| gio::Settings::new(GNOME_INTERFACE))
+}
+
+/// Size in points of a Pango font description string such as "Monospace 11".
+fn font_size_pt(desc: &str) -> Option<f64> {
+    let fd = gtk::pango::FontDescription::from_string(desc);
+    let size = f64::from(fd.size()) / f64::from(gtk::pango::SCALE);
+    let pt = if fd.is_size_absolute() { size * 0.75 } else { size };
+    (pt > 0.0).then_some(pt)
 }
 
 fn nick_menu(nick: &str) -> gio::Menu {
@@ -444,11 +466,14 @@ pub fn activate(gtk_app: &gtk::Application) {
         prefs_window: RefCell::new(None),
         networks_window: RefCell::new(None),
         quitting: Cell::new(false),
+        font_css: gtk::CssProvider::new(),
+        desktop_settings: gnome_interface_settings(),
     });
     APP.with(|a| *a.borrow_mut() = Some(app.clone()));
 
     app.setup_actions();
     app.rebuild_connect_menu();
+    app.setup_font_size();
     app.notebook.connect_switch_page(|_, page, _| {
         let page = page.clone();
         glib::idle_add_local_once(move || {
@@ -646,7 +671,65 @@ impl App {
         }
         *self.config.borrow_mut() = new;
         self.rebuild_connect_menu();
+        self.apply_font_size();
         res
+    }
+
+    // ----- message font size -----------------------------------------------------------------
+
+    /// The desktop's monospace font size in points: GNOME's monospace font setting when
+    /// available, otherwise GTK's default font size.
+    pub fn desktop_mono_font_size(&self) -> Option<f64> {
+        let gnome = self
+            .desktop_settings
+            .as_ref()
+            .and_then(|s| font_size_pt(&s.string(GNOME_MONO_KEY)));
+        gnome.or_else(|| {
+            gtk::Settings::default()
+                .and_then(|s| s.gtk_font_name())
+                .and_then(|n| font_size_pt(&n))
+        })
+    }
+
+    fn setup_font_size(&self) {
+        if let Some(display) = gdk::Display::default() {
+            // Above the base stylesheet so it wins over it.
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &self.font_css,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
+            );
+        }
+        if let Some(settings) = &self.desktop_settings {
+            settings.connect_changed(Some(GNOME_MONO_KEY), |_, _| {
+                if let Some(a) = current() {
+                    a.apply_font_size();
+                }
+            });
+        }
+        if let Some(settings) = gtk::Settings::default() {
+            settings.connect_gtk_font_name_notify(|_| {
+                if let Some(a) = current() {
+                    a.apply_font_size();
+                }
+            });
+        }
+        self.apply_font_size();
+    }
+
+    /// Set the message view font size from the preference, or from the desktop default.
+    fn apply_font_size(&self) {
+        let size = self
+            .config
+            .borrow()
+            .message_font_size
+            .map(f64::from)
+            .or_else(|| self.desktop_mono_font_size());
+        let css = match size {
+            Some(pt) => format!(".ircgoo-messages {{ font-size: {pt}pt; }}"),
+            None => String::new(),
+        };
+        self.font_css.load_from_data(&css);
     }
 
     // ----- tabs ------------------------------------------------------------------------------
