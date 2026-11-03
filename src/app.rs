@@ -1513,7 +1513,7 @@ impl App {
         }
     }
 
-    /// Network name, then the server's host:port and "TLS", one per line.
+    /// Network name, then the server's host:port and "TLS" or "non-TLS", one per line.
     fn tab_tooltip(&self, tab: &Rc<Tab>) -> Option<String> {
         let net = tab.network()?;
         let sessions = self.sessions.try_borrow().ok()?;
@@ -1526,9 +1526,7 @@ impl App {
             (state, Some((host, port, tls))) => {
                 text.push('\n');
                 text.push_str(&crate::config::describe_addr(host, *port, false));
-                if *tls {
-                    text.push_str("\nTLS");
-                }
+                text.push_str(if *tls { "\nTLS" } else { "\nnon-TLS" });
                 if matches!(state, ConnState::Connecting | ConnState::Registering) {
                     text.push_str("\nConnecting…");
                 }
