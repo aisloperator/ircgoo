@@ -809,6 +809,25 @@ impl App {
             .collect()
     }
 
+    /// The tabs that show the server messages of `net`: its network, channel and private
+    /// chat tabs. The network tab is created if the network has no tabs.
+    fn server_tabs(&self, net: &str) -> Vec<Rc<Tab>> {
+        let tabs = self.net_tabs(net);
+        if tabs.is_empty() {
+            vec![self.status_tab(net)]
+        } else {
+            tabs
+        }
+    }
+
+    /// The tabs for a server reply about `chan`: that channel's tab if it has one.
+    fn channel_tabs(&self, net: &str, chan: &str) -> Vec<Rc<Tab>> {
+        match self.channel_tab(net, chan) {
+            Some(t) => vec![t],
+            None => self.server_tabs(net),
+        }
+    }
+
     fn channel_tab(&self, net: &str, chan: &str) -> Option<Rc<Tab>> {
         self.find_tab(|k| matches!(k, TabKind::Channel(n, c) if n.eq_ignore_ascii_case(net) && irc_eq(c, chan)))
     }
@@ -1781,6 +1800,30 @@ impl App {
         tab.line(&[Part::Text("-!- ", "error"), Part::Text(text, "error")], None);
     }
 
+    fn server_line(&self, net: &str, parts: &[Part]) {
+        for t in self.server_tabs(net) {
+            t.line(parts, None);
+        }
+    }
+
+    fn server_info(&self, net: &str, text: &str) {
+        for t in self.server_tabs(net) {
+            self.info(&t, text);
+        }
+    }
+
+    fn server_info_tag(&self, net: &str, text: &str, tag: &'static str) {
+        for t in self.server_tabs(net) {
+            self.info_tag(&t, text, tag);
+        }
+    }
+
+    fn server_error(&self, net: &str, text: &str) {
+        for t in self.server_tabs(net) {
+            self.error(&t, text);
+        }
+    }
+
     fn set_lag(&self, net: &str, lag: Option<Duration>) {
         let text = lag.map(|d| format!("Lag:{}s", d.as_secs_f64().round() as u64));
         for t in self.net_tabs(net) {
@@ -1957,9 +2000,8 @@ impl App {
         } else {
             if s.cfg.servers.is_empty() {
                 s.want_connected = false;
-                let tab = self.status_tab(&s.name);
-                self.error(
-                    &tab,
+                self.server_error(
+                    &s.name,
                     &format!(
                         "No servers are configured for {}. Add one in the Networks window (F10, Networks…).",
                         s.name
@@ -1973,9 +2015,8 @@ impl App {
         };
         if host.trim().is_empty() {
             s.want_connected = false;
-            let tab = self.status_tab(&s.name);
-            self.error(
-                &tab,
+            self.server_error(
+                &s.name,
                 "The server host name is empty. Fix it in the Networks window (F10, Networks…).",
             );
             return;
@@ -2039,9 +2080,8 @@ impl App {
             }
             s.failures += 1;
             let delay = if s.failures as usize > n { 30 } else { 5 };
-            let tab = self.status_tab(&s.name);
-            self.info(
-                &tab,
+            self.server_info(
+                &s.name,
                 &format!("Reconnecting in {delay} seconds… (/network disconnect to stop)"),
             );
             let name = s.name.clone();
@@ -2072,8 +2112,7 @@ impl App {
         };
         match ev {
             NetEvent::Status(text) => {
-                let tab = self.status_tab(&s.name);
-                self.info(&tab, &text);
+                self.server_info(&s.name, &text);
             }
             NetEvent::Connected => self.on_connected(s),
             NetEvent::Line(line) => {
@@ -2132,9 +2171,8 @@ impl App {
                     if s.cap_ls.iter().any(|c| c == "sasl") {
                         req.push("sasl");
                     } else {
-                        let tab = self.status_tab(&s.name);
-                        self.error(
-                            &tab,
+                        self.server_error(
+                            &s.name,
                             "This server does not offer SASL; continuing without authentication.",
                         );
                     }
@@ -2158,8 +2196,7 @@ impl App {
                     } else {
                         "PLAIN"
                     };
-                    let tab = self.status_tab(&s.name);
-                    self.info(&tab, &format!("Authenticating with SASL {mech}…"));
+                    self.server_info(&s.name, &format!("Authenticating with SASL {mech}…"));
                     s.sasl_active = true;
                     s.send(&irc::build("AUTHENTICATE", &[mech]));
                     return;
@@ -2229,18 +2266,15 @@ impl App {
                 }
             }
             "900" => {
-                let tab = self.status_tab(&s.name);
-                self.info(&tab, m.params.last().map(String::as_str).unwrap_or(""));
+                self.server_info(&s.name, m.params.last().map(String::as_str).unwrap_or(""));
             }
             "903" => {
-                let tab = self.status_tab(&s.name);
-                self.info_tag(&tab, "SASL authentication successful", "join");
+                self.server_info_tag(&s.name, "SASL authentication successful", "join");
                 self.sasl_finished(s);
             }
             "902" | "904" | "905" | "906" | "907" => {
-                let tab = self.status_tab(&s.name);
-                self.error(
-                    &tab,
+                self.server_error(
+                    &s.name,
                     &format!(
                         "SASL authentication failed: {}",
                         m.params.last().map(String::as_str).unwrap_or("")
@@ -2254,8 +2288,7 @@ impl App {
                 s.failures = 0;
                 s.last_ping = Instant::now();
                 s.ping_sent = None;
-                let tab = self.status_tab(&s.name);
-                self.info(&tab, m.param(1));
+                self.server_info(&s.name, m.param(1));
                 self.update_nick_labels(s);
                 let mut chans: Vec<String> = s.cfg.autojoin.clone();
                 for t in self.net_tabs(&s.name) {
@@ -2299,22 +2332,20 @@ impl App {
                         _ => {}
                     }
                 }
-                let tab = self.status_tab(&s.name);
-                tab.line(
+                self.server_line(
+                    &s.name,
                     &[Part::Text("-!- ", "marker"), Part::Text(&m.params_from(1), "dim")],
-                    None,
                 );
             }
             "433" | "432" | "436" | "437" if s.state == ConnState::Registering => {
-                let tab = self.status_tab(&s.name);
                 let bad = m.param(1).to_string();
                 let base = if cmd == "432" { "Goo".to_string() } else { bad.clone() };
                 let mut next = format!("{base}_");
                 if next.len() > 16 {
                     next = format!("{}{}", &base[..base.len().min(12)], unix_millis() % 1000);
                 }
-                self.error(
-                    &tab,
+                self.server_error(
+                    &s.name,
                     &format!(
                         "Nick {bad} is unavailable ({}); trying {next}",
                         m.params.last().map(String::as_str).unwrap_or("")
@@ -2503,8 +2534,7 @@ impl App {
                     self.update_nick_labels(s);
                     self.queue_nicklist(&s.name, &target);
                 } else {
-                    let tab = self.status_tab(&s.name);
-                    self.info(&tab, &format!("Mode change [{modes}] for {target}"));
+                    self.server_info(&s.name, &format!("Mode change [{modes}] for {target}"));
                 }
             }
             "TOPIC" => {
@@ -2531,17 +2561,16 @@ impl App {
                 if let Some(ch) = s.channels.get_mut(&irc_lower(&chan)) {
                     ch.topic = topic.clone();
                 }
-                let tab = self
-                    .channel_tab(&s.name, &chan)
-                    .unwrap_or_else(|| self.net_tab(&s.name));
-                tab.line(
-                    &[
-                        Part::Text("-!- ", "marker"),
-                        Part::Text(&format!("Topic for {chan}: "), ""),
-                        Part::Irc(&topic),
-                    ],
-                    None,
-                );
+                for tab in self.channel_tabs(&s.name, &chan) {
+                    tab.line(
+                        &[
+                            Part::Text("-!- ", "marker"),
+                            Part::Text(&format!("Topic for {chan}: "), ""),
+                            Part::Irc(&topic),
+                        ],
+                        None,
+                    );
+                }
             }
             "333" => {
                 let chan = m.param(1);
@@ -2552,14 +2581,15 @@ impl App {
                     .ok()
                     .and_then(fmt_unix_time)
                     .unwrap_or_default();
-                let tab = self.channel_tab(&s.name, chan).unwrap_or_else(|| self.net_tab(&s.name));
-                tab.line(
-                    &[
-                        Part::Text("-!- ", "marker"),
-                        Part::Text(&format!("Topic set by {setter} [{when}]"), "dim"),
-                    ],
-                    None,
-                );
+                for tab in self.channel_tabs(&s.name, chan) {
+                    tab.line(
+                        &[
+                            Part::Text("-!- ", "marker"),
+                            Part::Text(&format!("Topic set by {setter} [{when}]"), "dim"),
+                        ],
+                        None,
+                    );
+                }
             }
             "353" => {
                 let chan = m.param(2).to_string();
@@ -2568,8 +2598,7 @@ impl App {
                         s.add_member(&chan, n);
                     }
                 } else {
-                    let tab = self.net_tab(&s.name);
-                    self.info(&tab, &format!("Users on {chan}: {}", m.param(3)));
+                    self.server_info(&s.name, &format!("Users on {chan}: {}", m.param(3)));
                 }
             }
             "366" => {
@@ -2591,20 +2620,22 @@ impl App {
             }
             "324" => {
                 let chan = m.param(1);
-                let tab = self.channel_tab(&s.name, chan).unwrap_or_else(|| self.net_tab(&s.name));
-                self.info(&tab, &format!("Modes for {chan}: {}", m.params_from(2)));
+                for tab in self.channel_tabs(&s.name, chan) {
+                    self.info(&tab, &format!("Modes for {chan}: {}", m.params_from(2)));
+                }
             }
             "329" => {
                 let chan = m.param(1);
                 if let Some(when) = m.param(2).parse::<i64>().ok().and_then(fmt_unix_time) {
-                    let tab = self.channel_tab(&s.name, chan).unwrap_or_else(|| self.net_tab(&s.name));
-                    tab.line(
-                        &[
-                            Part::Text("-!- ", "marker"),
-                            Part::Text(&format!("Channel {chan} created {when}"), "dim"),
-                        ],
-                        None,
-                    );
+                    for tab in self.channel_tabs(&s.name, chan) {
+                        tab.line(
+                            &[
+                                Part::Text("-!- ", "marker"),
+                                Part::Text(&format!("Channel {chan} created {when}"), "dim"),
+                            ],
+                            None,
+                        );
+                    }
                 }
             }
             "PRIVMSG" | "NOTICE" => self.handle_privmsg(s, m, cmd == "NOTICE"),
@@ -2621,8 +2652,7 @@ impl App {
                 self.note_activity(&tab, Activity::Highlight);
             }
             "ERROR" => {
-                let tab = self.status_tab(&s.name);
-                self.error(&tab, &format!("Server error: {}", m.param(0)));
+                self.server_error(&s.name, &format!("Server error: {}", m.param(0)));
             }
             "311" | "312" | "313" | "317" | "318" | "319" | "330" | "301" | "671" | "378" | "338" | "320" | "401" => {
                 self.handle_whois(s, m);
@@ -2632,20 +2662,17 @@ impl App {
                 if numeric {
                     let text = m.params.get(1..).map(|p| p.join(" ")).unwrap_or_default();
                     if cmd.starts_with('4') || cmd.starts_with('5') {
-                        let tab = self.net_tab(&s.name);
-                        self.error(&tab, &text);
+                        self.server_error(&s.name, &text);
                     } else {
-                        let tab = self.status_tab(&s.name);
-                        self.info(&tab, &text);
+                        self.server_info(&s.name, &text);
                     }
                 } else {
-                    let tab = self.status_tab(&s.name);
-                    tab.line(
+                    self.server_line(
+                        &s.name,
                         &[Part::Text(
                             &format!("{} {} {}", m.nick(), m.command, m.params.join(" ")),
                             "dim",
                         )],
-                        None,
                     );
                 }
             }
@@ -2711,9 +2738,8 @@ impl App {
         let text = m.param(1);
         let from = m.nick().to_string();
         if notice && (!m.is_from_user() || target == "*" || s.state != ConnState::Connected) {
-            let tab = self.status_tab(&s.name);
             let src = if from.is_empty() { "*" } else { &from };
-            tab.line(&[Part::Text(&format!("-{src}- "), "notice"), Part::Irc(text)], None);
+            self.server_line(&s.name, &[Part::Text(&format!("-{src}- "), "notice"), Part::Irc(text)]);
             return;
         }
         let syms = s.prefix_symbols();
@@ -2883,7 +2909,6 @@ impl App {
             }
             return;
         }
-        let tab = self.net_tab(&s.name);
         let text = match cmd {
             "311" => format!(
                 "{who} is {}@{} ({})",
@@ -2908,8 +2933,8 @@ impl App {
             "330" => format!("{who} is logged in as {}", m.param(2)),
             "301" => format!("{who} is away: {}", m.param(2)),
             "401" => {
-                return self.error(
-                    &tab,
+                return self.server_error(
+                    &s.name,
                     &format!(
                         "{who}: {}",
                         m.params.last().map(String::as_str).unwrap_or("No such nick")
@@ -2918,7 +2943,7 @@ impl App {
             }
             _ => format!("{who} {}", m.params_from(2)),
         };
-        self.info(&tab, &text);
+        self.server_info(&s.name, &text);
     }
 
     fn tick(&self) {

@@ -34,6 +34,8 @@ chat, and the main menu sits in the same row.
   with the local time (`hh:mm:ss`).
 - Right-click (or long-press) a web address in a message and choose Open Link to open it
   in the default browser. A plain click never opens a link.
+- Server messages for a network appear in all of that network's tabs, so you see them
+  without leaving the channel. Replies about a channel that has a tab go only to that tab.
 - Nick and channel completion with Tab, plus per-tab input history.
 - Hovering a tab shows its network, the server's host and port, and "TLS" or "non-TLS".
   With a bouncer, the bouncer's address is shown.
