@@ -10,7 +10,7 @@ use gtk::{gdk, gio, glib};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -160,6 +160,10 @@ struct Session {
     reconnect_source: Option<glib::SourceId>,
     failures: u32,
     whois_hover: HashSet<String>,
+    /// A nick whose hover lookup ended with 401; a 318 may still follow it.
+    whois_hover_failed: Option<String>,
+    /// `/whois` requests and the tabs they came from. Kept per network, across reconnects.
+    whois_requests: irc::WhoisRequests<Weak<Tab>>,
     whois_partial: HashMap<String, WhoisInfo>,
     whois_cache: HashMap<String, WhoisInfo>,
     user_joins: HashSet<String>,
@@ -193,6 +197,8 @@ impl Session {
             reconnect_source: None,
             failures: 0,
             whois_hover: HashSet::new(),
+            whois_hover_failed: None,
+            whois_requests: irc::WhoisRequests::new(),
             whois_partial: HashMap::new(),
             whois_cache: HashMap::new(),
             user_joins: HashSet::new(),
@@ -1353,6 +1359,17 @@ impl App {
         }
     }
 
+    /// Send WHOIS for `target` (a nick or comma-separated nicks); replies go to `tab`.
+    fn send_whois(&self, tab: &Rc<Tab>, target: &str) {
+        let requester = Rc::downgrade(tab);
+        self.with_session(tab, true, |s| {
+            for nick in target.split(',').filter(|n| !n.is_empty()) {
+                s.whois_requests.push(&irc_lower(nick), requester.clone());
+            }
+            s.send(&irc::build("WHOIS", &[target]));
+        });
+    }
+
     fn send_cmd(&self, tab: &Rc<Tab>, line: &str) {
         self.with_session(tab, true, |s| s.send(line));
     }
@@ -1575,7 +1592,7 @@ impl App {
                 let Some(n) = args.first() else {
                     return usage("/whois <nick>");
                 };
-                self.send_cmd(tab, &irc::build("WHOIS", &[n]));
+                self.send_whois(tab, n);
             }
             "names" => {
                 let target = args.first().map(|s| s.to_string()).or(chan);
@@ -1803,7 +1820,7 @@ impl App {
                 let q = self.ensure_query_tab(&net, nick, &own);
                 self.switch_to(&q);
             }
-            "whois" => self.send_cmd(tab, &irc::build("WHOIS", &[nick])),
+            "whois" => self.send_whois(tab, nick),
             "op" => self.send_cmd(tab, &irc::build("MODE", &[&chan, "+o", nick])),
             "deop" => self.send_cmd(tab, &irc::build("MODE", &[&chan, "-o", nick])),
             "voice" => self.send_cmd(tab, &irc::build("MODE", &[&chan, "+v", nick])),
@@ -1816,6 +1833,8 @@ impl App {
     fn close_tab(&self, tab: &Rc<Tab>) {
         match tab.kind() {
             TabKind::Home => {}
+            // A WHOIS reply with no known tab can open this next to the network's other tabs.
+            TabKind::Status(net) if self.net_tabs(&net).len() > 1 => self.remove_tab(tab),
             TabKind::Status(net) => {
                 self.disconnect_network(&net, DEFAULT_QUIT);
                 for t in self.net_tabs(&net) {
@@ -1964,7 +1983,8 @@ impl App {
             return Some(info.tooltip());
         }
         let stale = cached.map(|i| i.tooltip());
-        if s.connected() && s.whois_hover.is_empty() {
+        // With a /whois pending, a lookup now couldn't be told apart from its replies.
+        if s.connected() && s.whois_hover.is_empty() && !s.whois_requests.contains(&key) {
             s.whois_hover.insert(key);
             s.send(&irc::build("WHOIS", &[nick]));
         }
@@ -2713,6 +2733,14 @@ impl App {
             "311" | "312" | "313" | "317" | "318" | "319" | "330" | "301" | "671" | "378" | "338" | "320" | "401" => {
                 self.handle_whois(s, m);
             }
+            // Other WHOIS replies, such as 276 (certificate) and 307 (registered nick).
+            _ if cmd.len() == 3
+                && cmd.bytes().all(|b| b.is_ascii_digit())
+                && (s.whois_hover.contains(&irc_lower(m.param(1)))
+                    || s.whois_requests.contains(&irc_lower(m.param(1)))) =>
+            {
+                self.handle_whois(s, m);
+            }
             _ => {
                 let numeric = cmd.len() == 3 && cmd.bytes().all(|b| b.is_ascii_digit());
                 if numeric {
@@ -2937,6 +2965,10 @@ impl App {
         let who = m.param(1).to_string();
         let key = irc_lower(&who);
         let cmd = m.command.as_str();
+        if cmd == "318" && s.whois_hover_failed.as_deref() == Some(key.as_str()) {
+            s.whois_hover_failed = None;
+            return;
+        }
         if s.whois_hover.contains(&key) {
             let e = s.whois_partial.entry(key.clone()).or_default();
             e.nick = who.clone();
@@ -2961,10 +2993,20 @@ impl App {
                 info.fetched = Some(Instant::now());
                 s.whois_cache.insert(key.clone(), info);
                 s.whois_hover.remove(&key);
+                if cmd == "401" {
+                    s.whois_hover_failed = Some(key);
+                }
                 self.refresh_nick_tooltip(&s.name, &who);
             }
             return;
         }
+        let tabs = match s.whois_requests.reply(&key, cmd) {
+            Some(requester) => vec![requester.upgrade().unwrap_or_else(|| self.status_tab(&s.name))],
+            // These also answer messages: 301 when the target is away, 401 when it doesn't exist.
+            None if matches!(cmd, "301" | "401") => self.server_tabs(&s.name),
+            None => vec![self.status_tab(&s.name)],
+        };
+        self.update_nick_labels(s);
         let text = match cmd {
             "311" => format!(
                 "{who} is {}@{} ({})",
@@ -2989,17 +3031,20 @@ impl App {
             "330" => format!("{who} is logged in as {}", m.param(2)),
             "301" => format!("{who} is away: {}", m.param(2)),
             "401" => {
-                return self.server_error(
-                    &s.name,
-                    &format!(
-                        "{who}: {}",
-                        m.params.last().map(String::as_str).unwrap_or("No such nick")
-                    ),
+                let text = format!(
+                    "{who}: {}",
+                    m.params.last().map(String::as_str).unwrap_or("No such nick")
                 );
+                for t in &tabs {
+                    self.error(t, &text);
+                }
+                return;
             }
             _ => format!("{who} {}", m.params_from(2)),
         };
-        self.server_info(&s.name, &text);
+        for t in &tabs {
+            self.info(t, &text);
+        }
     }
 
     fn tick(&self) {

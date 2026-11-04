@@ -1,5 +1,7 @@
 //! IRC protocol helpers: message parsing/building, case mapping, mIRC formatting codes.
 
+use std::collections::VecDeque;
+
 #[derive(Debug, Clone)]
 pub struct Message {
     #[allow(dead_code)]
@@ -321,6 +323,65 @@ pub fn url_at(text: &str, pos: usize) -> Option<String> {
     None
 }
 
+/// WHOIS requests waiting for replies, oldest first, each with a value for its requester.
+/// Servers answer in order, so several requests for one nick are matched first to first.
+/// `nick` arguments must be in `irc_lower` form.
+pub struct WhoisRequests<T> {
+    queue: VecDeque<WhoisRequest<T>>,
+}
+
+struct WhoisRequest<T> {
+    nick: String,
+    requester: T,
+    /// A 401 (no such nick) arrived. Some servers follow it with 318, others send nothing more.
+    failed: bool,
+}
+
+impl<T: Clone> WhoisRequests<T> {
+    const MAX: usize = 100;
+
+    pub fn new() -> Self {
+        WhoisRequests { queue: VecDeque::new() }
+    }
+
+    /// Remember a request, forgetting the oldest one if there are already `MAX`.
+    pub fn push(&mut self, nick: &str, requester: T) {
+        if self.queue.len() >= Self::MAX {
+            self.queue.pop_front();
+        }
+        self.queue.push_back(WhoisRequest {
+            nick: nick.to_string(),
+            requester,
+            failed: false,
+        });
+    }
+
+    pub fn contains(&self, nick: &str) -> bool {
+        self.queue.iter().any(|r| r.nick == nick)
+    }
+
+    /// The requester that a reply with numeric `command` about `nick` belongs to, if any.
+    /// 318 (end of WHOIS) forgets the request.
+    pub fn reply(&mut self, nick: &str, command: &str) -> Option<T> {
+        let find = |q: &VecDeque<WhoisRequest<T>>| q.iter().position(|r| r.nick == nick);
+        let mut i = find(&self.queue)?;
+        // Anything but 318 after a 401 means that request got no 318, so it is over.
+        while command != "318" && self.queue[i].failed {
+            self.queue.remove(i);
+            i = find(&self.queue)?;
+        }
+        let requester = self.queue[i].requester.clone();
+        match command {
+            "318" => {
+                self.queue.remove(i);
+            }
+            "401" => self.queue[i].failed = true,
+            _ => {}
+        }
+        Some(requester)
+    }
+}
+
 /// Case-insensitive whole-word search for `word` in `text` (used for highlights).
 pub fn contains_word(text: &str, word: &str) -> bool {
     if word.is_empty() {
@@ -366,6 +427,56 @@ pub fn fmt_duration(mut secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn whois_requests_are_forgotten_at_the_end() {
+        let mut w = WhoisRequests::new();
+        w.push("bob", 1);
+        assert_eq!(w.reply("bob", "311"), Some(1));
+        assert_eq!(w.reply("bob", "318"), Some(1));
+        assert_eq!(w.reply("bob", "311"), None);
+        assert!(!w.contains("bob"));
+    }
+
+    #[test]
+    fn whois_requests_for_one_nick_are_answered_in_order() {
+        let mut w = WhoisRequests::new();
+        w.push("bob", 1);
+        w.push("amy", 2);
+        w.push("bob", 3);
+        assert_eq!(w.reply("bob", "311"), Some(1));
+        assert_eq!(w.reply("amy", "311"), Some(2));
+        assert_eq!(w.reply("bob", "318"), Some(1));
+        assert_eq!(w.reply("bob", "311"), Some(3));
+    }
+
+    #[test]
+    fn whois_requests_handle_no_such_nick_with_and_without_318() {
+        let mut w = WhoisRequests::new();
+        w.push("gone", 1);
+        assert_eq!(w.reply("gone", "401"), Some(1));
+        assert_eq!(w.reply("gone", "318"), Some(1));
+        assert!(!w.contains("gone"));
+
+        // A server that sends only 401: the next request's replies aren't misdirected.
+        w.push("gone", 2);
+        w.reply("gone", "401");
+        w.push("gone", 3);
+        assert_eq!(w.reply("gone", "311"), Some(3));
+        assert_eq!(w.reply("gone", "318"), Some(3));
+        assert!(!w.contains("gone"));
+    }
+
+    #[test]
+    fn whois_requests_forget_the_oldest_past_the_limit() {
+        let mut w = WhoisRequests::new();
+        for i in 0..=100 {
+            w.push(&format!("n{i}"), i);
+        }
+        assert!(!w.contains("n0"));
+        assert_eq!(w.reply("n1", "311"), Some(1));
+        assert_eq!(w.reply("n100", "311"), Some(100));
+    }
 
     #[test]
     fn url_at_finds_urls() {
