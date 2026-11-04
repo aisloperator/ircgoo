@@ -32,6 +32,8 @@ chat, and the main menu sits in the same row.
   significant.
 - Selectable, copyable message text with mIRC colours and formatting. Every line starts
   with the local time (`hh:mm:ss`).
+- Right-click (or long-press) a web address in a message and choose Open Link to open it
+  in the default browser. A plain click never opens a link.
 - Nick and channel completion with Tab, plus per-tab input history.
 - Hovering a tab shows its network, the server's host and port, and "TLS" or "non-TLS".
   With a bouncer, the bouncer's address is shown.

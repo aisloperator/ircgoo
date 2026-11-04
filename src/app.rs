@@ -607,6 +607,13 @@ impl App {
             }
         });
         self.window.add_action(&connect);
+        let open_link = gio::SimpleAction::new("open-link", Some(glib::VariantTy::STRING));
+        open_link.connect_activate(|_, p| {
+            if let (Some(a), Some(url)) = (current(), p.and_then(|p| p.get::<String>())) {
+                a.open_link(&url);
+            }
+        });
+        self.window.add_action(&open_link);
 
         let accels: &[(&str, &[&str])] = &[
             ("app.quit", &["<Ctrl>q"]),
@@ -757,6 +764,24 @@ impl App {
     }
 
     // ----- tabs ------------------------------------------------------------------------------
+
+    /// Open a URL in the default web browser.
+    fn open_link(&self, url: &str) {
+        let shown = url.to_string();
+        gtk::show_uri_full(
+            Some(&self.window),
+            url,
+            gdk::CURRENT_TIME,
+            None::<&gio::Cancellable>,
+            move |result| {
+                if let (Err(e), Some(a)) = (result, current())
+                    && let Some(t) = a.current_tab()
+                {
+                    a.error(&t, &format!("Could not open {shown}: {e}"));
+                }
+            },
+        );
+    }
 
     fn tab_for_widget(&self, w: &gtk::Widget) -> Option<Rc<Tab>> {
         self.tabs
@@ -1014,6 +1039,18 @@ impl App {
             }
         });
         tab.view.add_controller(view_keys);
+
+        // Runs before the text view opens its context menu, for a right click or a long press.
+        let press = gtk::GestureClick::new();
+        press.set_button(0);
+        press.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let w = Rc::downgrade(tab);
+        press.connect_pressed(move |_, _, x, y| {
+            if let Some(t) = w.upgrade() {
+                t.update_link_menu(x, y);
+            }
+        });
+        tab.view.add_controller(press);
 
         if let Some(nl) = &tab.nicklist {
             let group = gio::SimpleActionGroup::new();

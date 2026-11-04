@@ -270,6 +270,57 @@ pub fn strip_formatting(s: &str) -> String {
     parse_formatting(s).into_iter().map(|(_, t)| t).collect()
 }
 
+/// The web URL in `text` that covers character index `pos`, ready to open. Only `http://`,
+/// `https://` and `www.` are recognized, so text in a message can't start other URL handlers.
+/// A URL without a scheme (`www.example.org`) gets `https://`. Punctuation after a URL, such
+/// as a sentence's full stop or the closing bracket of `(http://example.org)`, is left out.
+pub fn url_at(text: &str, pos: usize) -> Option<String> {
+    const PREFIXES: [&str; 3] = ["https://", "http://", "www."];
+    let chars: Vec<char> = text.chars().collect();
+    let lower: Vec<char> = chars.iter().map(char::to_ascii_lowercase).collect();
+    let mut i = 0;
+    while i < chars.len() && i <= pos {
+        let boundary = i == 0 || !chars[i - 1].is_alphanumeric();
+        let prefix = PREFIXES
+            .iter()
+            .find(|p| lower[i..].iter().copied().take(p.len()).eq(p.chars()));
+        let (true, Some(prefix)) = (boundary, prefix) else {
+            i += 1;
+            continue;
+        };
+        let stop = |c: &char| c.is_whitespace() || c.is_control() || matches!(c, '<' | '>' | '"');
+        let mut end = i + chars[i..].iter().position(stop).unwrap_or(chars.len() - i);
+        let url_end = end;
+        while end > i + prefix.len() {
+            let c = chars[end - 1];
+            let open = match c {
+                ')' => Some('('),
+                ']' => Some('['),
+                '}' => Some('{'),
+                _ => None,
+            };
+            let unmatched = open.is_some_and(|o| {
+                let url = &chars[i..end];
+                url.iter().filter(|x| **x == c).count() > url.iter().filter(|x| **x == o).count()
+            });
+            if !unmatched && !matches!(c, '.' | ',' | ';' | ':' | '!' | '?' | '\'' | '*' | '_') {
+                break;
+            }
+            end -= 1;
+        }
+        if end > i + prefix.len() && pos < end {
+            let url: String = chars[i..end].iter().collect();
+            return Some(if *prefix == "www." {
+                format!("https://{url}")
+            } else {
+                url
+            });
+        }
+        i = url_end.max(i + 1);
+    }
+    None
+}
+
 /// Case-insensitive whole-word search for `word` in `text` (used for highlights).
 pub fn contains_word(text: &str, word: &str) -> bool {
     if word.is_empty() {
@@ -315,6 +366,58 @@ pub fn fmt_duration(mut secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn url_at_finds_urls() {
+        let t = "see https://example.org/a?b=1#c now";
+        assert_eq!(url_at(t, 4).as_deref(), Some("https://example.org/a?b=1#c"));
+        assert_eq!(url_at(t, 30).as_deref(), Some("https://example.org/a?b=1#c"));
+        assert_eq!(url_at(t, 3), None);
+        assert_eq!(url_at(t, 31), None);
+        assert_eq!(url_at("HTTP://Example.org", 0).as_deref(), Some("HTTP://Example.org"));
+        assert_eq!(
+            url_at("go www.example.org", 5).as_deref(),
+            Some("https://www.example.org")
+        );
+    }
+
+    #[test]
+    fn url_at_finds_the_url_under_the_position() {
+        let t = "http://a.example http://b.example";
+        assert_eq!(url_at(t, 3).as_deref(), Some("http://a.example"));
+        assert_eq!(url_at(t, 20).as_deref(), Some("http://b.example"));
+        assert_eq!(url_at(t, 16), None);
+    }
+
+    #[test]
+    fn url_at_leaves_out_surrounding_punctuation() {
+        assert_eq!(url_at("at http://a.example.", 5).as_deref(), Some("http://a.example"));
+        assert_eq!(url_at("(http://a.example/b)", 5).as_deref(), Some("http://a.example/b"));
+        assert_eq!(url_at("<http://a.example>", 5).as_deref(), Some("http://a.example"));
+        assert_eq!(
+            url_at("http://a.example/x_(y)", 5).as_deref(),
+            Some("http://a.example/x_(y)")
+        );
+        assert_eq!(url_at("http://a.example,", 16), None);
+    }
+
+    #[test]
+    fn url_at_rejects_other_text() {
+        assert_eq!(url_at("file:///etc/passwd", 3), None);
+        assert_eq!(url_at("javascript:alert(1)", 3), None);
+        assert_eq!(url_at("xhttp://a.example", 3), None);
+        assert_eq!(url_at("nothttp://a.example", 6), None);
+        assert_eq!(url_at("http://", 3), None);
+        assert_eq!(url_at("www.", 1), None);
+        assert_eq!(url_at("", 0), None);
+    }
+
+    #[test]
+    fn url_at_counts_characters_not_bytes() {
+        let t = "é€ http://a.example/é";
+        assert_eq!(url_at(t, 3).as_deref(), Some("http://a.example/é"));
+        assert_eq!(url_at(t, 1), None);
+    }
 
     #[test]
     fn parse_basic() {

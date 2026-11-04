@@ -2,7 +2,7 @@
 
 use crate::irc::{self, Style};
 use gtk::prelude::*;
-use gtk::{gdk, glib, pango};
+use gtk::{gdk, gio, glib, pango};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -95,6 +95,8 @@ pub struct Tab {
     pub label: gtk::Label,
     pub view: gtk::TextView,
     pub buffer: gtk::TextBuffer,
+    /// Extra context menu section: "Open Link" when the pointer was last pressed on a URL.
+    link_menu: gio::Menu,
     pub scroller: gtk::ScrolledWindow,
     end_mark: gtk::TextMark,
     /// Whether the view should stay scrolled to the end: true until the user scrolls away from it.
@@ -287,6 +289,8 @@ impl Tab {
             .pixels_above_lines(1)
             .build();
         view.add_css_class("ircgoo-messages");
+        let link_menu = gio::Menu::new();
+        view.set_extra_menu(Some(&link_menu));
         let scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vexpand(true)
@@ -364,6 +368,7 @@ impl Tab {
             label,
             view,
             buffer,
+            link_menu,
             scroller,
             end_mark,
             follow_end,
@@ -446,6 +451,29 @@ impl Tab {
         if self.follow_end.get() {
             buf.move_mark(&self.end_mark, &buf.end_iter());
             self.view.scroll_mark_onscreen(&self.end_mark);
+        }
+    }
+
+    /// Offer "Open Link" in the context menu only if view position `x`, `y` is on a URL.
+    pub fn update_link_menu(&self, x: f64, y: f64) {
+        self.link_menu.remove_all();
+        let (bx, by) = self
+            .view
+            .window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
+        let Some(iter) = self.view.iter_at_location(bx, by) else {
+            return;
+        };
+        let mut start = iter;
+        start.set_line_offset(0);
+        let mut end = iter;
+        if !end.ends_line() {
+            end.forward_to_line_end();
+        }
+        let text = self.buffer.text(&start, &end, true);
+        if let Some(url) = irc::url_at(&text, iter.line_offset() as usize) {
+            let item = gio::MenuItem::new(Some("Open Link"), None);
+            item.set_action_and_target_value(Some("win.open-link"), Some(&url.to_variant()));
+            self.link_menu.append_item(&item);
         }
     }
 
