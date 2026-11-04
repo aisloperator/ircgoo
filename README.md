@@ -6,6 +6,8 @@ No license is given.
 
 Website: <https://www.aisloperator.com/>
 
+![IrcGoo in a dark theme, showing the #libera channel, with other users' nicks blurred](screenshot.png)
+
 IrcGoo is a spartan IRC client for Linux desktops (X11 or Wayland),
 written in Rust with GTK4. The minimalist main window is designed to occupy a small area of
 the screen without wasting space. It has a row of tabs, one for each channel or private
