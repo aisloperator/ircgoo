@@ -660,7 +660,7 @@ impl App {
             .modal(true)
             .program_name("IrcGoo")
             .version(VERSION)
-            .comments("A spartan, keyboard-driven IRC client for Linux desktops.")
+            .comments("A spartan IRC client for Linux desktops.")
             .website(WEBSITE)
             .website_label("AI Sloperator")
             .authors(vec!["AI Sloperator with Claude Code"])
