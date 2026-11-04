@@ -836,6 +836,8 @@ impl App {
         self.find_tab(|k| matches!(k, TabKind::Query(n, q) if n.eq_ignore_ascii_case(net) && irc_eq(q, nick)))
     }
 
+    /// The network's tab, created if needed. Use `server_tabs` or `net_tab` to reach a
+    /// network without opening this tab next to its channels.
     fn status_tab(&self, net: &str) -> Rc<Tab> {
         if let Some(t) = self.find_tab(|k| matches!(k, TabKind::Status(n) if n.eq_ignore_ascii_case(net))) {
             return t;
@@ -867,11 +869,11 @@ impl App {
         t
     }
 
-    /// The current tab if it belongs to `net`, otherwise the network's status tab.
+    /// The current tab if it belongs to `net`, otherwise one of the network's tabs.
     fn net_tab(&self, net: &str) -> Rc<Tab> {
         match self.current_tab() {
             Some(t) if t.network().is_some_and(|n| n.eq_ignore_ascii_case(net)) => t,
-            _ => self.status_tab(net),
+            _ => self.server_tabs(net).remove(0),
         }
     }
 
@@ -900,7 +902,61 @@ impl App {
         } else if let Some(home) = self.find_tab(|k| *k == TabKind::Home) {
             self.remove_tab(&home);
         }
+        if let TabKind::Channel(net, _) | TabKind::Query(net, _) = kind {
+            // Deferred because the command or message being handled may still use that tab.
+            glib::idle_add_local_once(move || {
+                if let Some(a) = current() {
+                    a.close_status_tab(&net);
+                }
+            });
+        }
         tab
+    }
+
+    /// Close the network's tab now that a channel or private chat tab has taken over.
+    /// If it was showing, its unsent text, input history and focus move to the first
+    /// remaining tab, which after connecting is the first channel joined.
+    fn close_status_tab(&self, net: &str) {
+        let is_status = |t: &Rc<Tab>| matches!(*t.kind.borrow(), TabKind::Status(_));
+        let tabs = self.net_tabs(net);
+        let (Some(status), Some(other)) = (tabs.iter().find(|t| is_status(t)), tabs.iter().find(|t| !is_status(t)))
+        else {
+            return;
+        };
+        if self.current_tab().is_some_and(|c| Rc::ptr_eq(&c, status)) {
+            *other.history.borrow_mut() = status.history.take();
+            let draft = status.entry.text();
+            self.switch_to(other);
+            if !draft.is_empty() && other.entry.text().is_empty() {
+                other.entry.set_text(&draft);
+                // After switching, which selects the text; typing would replace it.
+                other.entry.set_position(-1);
+            }
+        }
+        self.remove_tab(status);
+    }
+
+    /// Close a channel or private chat tab. The network's last such tab is replaced by the
+    /// network tab, in the same place, so there is still a place for commands and messages.
+    fn close_net_tab(&self, tab: &Rc<Tab>, net: &str) {
+        if self.net_tabs(net).len() == 1 {
+            let status = self.status_tab(net);
+            status.nick_label.set_text(&self.own_nick(net));
+            if tab.lag_label.is_visible() {
+                status.set_lag(Some(tab.lag_label.text().as_str()));
+            }
+            self.info(
+                &status,
+                "No channels or private chats are open here. Use /join to join a channel, or close this tab to leave this network.",
+            );
+            if let Some(n) = self.notebook.page_num(&tab.root) {
+                self.notebook.reorder_child(&status.root, Some(n));
+            }
+            if self.current_tab().is_some_and(|c| Rc::ptr_eq(&c, tab)) {
+                self.switch_to(&status);
+            }
+        }
+        self.remove_tab(tab);
     }
 
     fn remove_tab(&self, tab: &Rc<Tab>) {
@@ -1780,9 +1836,9 @@ impl App {
                 {
                     s.send(&irc::build("PART", &[&chan, DEFAULT_QUIT]));
                 }
-                self.remove_tab(tab);
+                self.close_net_tab(tab, &net);
             }
-            TabKind::Query(..) => self.remove_tab(tab),
+            TabKind::Query(net, _) => self.close_net_tab(tab, &net),
         }
     }
 
@@ -1936,7 +1992,7 @@ impl App {
             }
             return;
         };
-        let tab = self.status_tab(&cfg.name);
+        let tab = self.net_tab(&cfg.name);
         if user_initiated {
             self.switch_to(&tab);
         }

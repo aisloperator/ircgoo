@@ -11,6 +11,11 @@ written in Rust with GTK4. The main window is designed to occupy a small corner 
 the screen without wasting space. It has a row of tabs, one for each channel or private
 chat, and the main menu sits in the same row.
 
+To keep the tab row short, tabs open and close by themselves. A network has its own tab
+only while it has no channel or private chat tabs. The tab appears when you close the last
+of them, and closing it leaves the network. With no tabs left, an IrcGoo tab appears with
+help on getting connected.
+
 ## Features
 
 - Multiple IRC networks connected at the same time, with at most one server per network
