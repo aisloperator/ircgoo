@@ -252,10 +252,15 @@ fn track_follow_end(adj: &gtk::Adjustment, follow: &Rc<Cell<bool>>) {
             if settling.replace(true) {
                 return;
             }
-            let (adj, follow, settling) = (adj.clone(), follow.clone(), settling.clone());
+            // Weak: the tab may be closed before this runs, and GTK aborts if the adjustment
+            // of a destroyed text view is used.
+            let (adj, follow, settling) = (adj.downgrade(), follow.clone(), settling.clone());
             glib::idle_add_local_full(glib::Priority::LOW, move || {
                 settling.set(false);
-                if follow.get() && !at_end(&adj) {
+                if let Some(adj) = adj.upgrade()
+                    && follow.get()
+                    && !at_end(&adj)
+                {
                     adj.set_value(adj.upper() - adj.page_size());
                 }
                 glib::ControlFlow::Break
