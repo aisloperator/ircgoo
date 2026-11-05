@@ -8,7 +8,7 @@ use crate::tls::TlsSettings;
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 use std::sync::mpsc;
@@ -305,6 +305,8 @@ pub struct App {
     font_css: gtk::CssProvider,
     /// GNOME's interface settings, when installed (source of the monospace font size).
     desktop_settings: Option<gio::Settings>,
+    /// Recent changes of the window's active state, for `/focusinfo`.
+    active_log: RefCell<VecDeque<String>>,
 }
 
 thread_local! {
@@ -484,6 +486,7 @@ pub fn activate(gtk_app: &gtk::Application) {
         networks_window: RefCell::new(None),
         quitting: Cell::new(false),
         font_css: gtk::CssProvider::new(),
+        active_log: RefCell::new(VecDeque::new()),
         desktop_settings: gnome_interface_settings(),
     });
     APP.with(|a| *a.borrow_mut() = Some(app.clone()));
@@ -509,6 +512,16 @@ pub fn activate(gtk_app: &gtk::Application) {
                 a.on_tab_switched(&page);
             }
         });
+    });
+    app.window.connect_is_active_notify(|w| {
+        if let Some(a) = current() {
+            let mut log = a.active_log.borrow_mut();
+            if log.len() == 8 {
+                log.pop_front();
+            }
+            let time = glib::DateTime::now_local().and_then(|t| t.format("%H:%M:%S"));
+            log.push_back(format!("{} {}", time.map_or("?".into(), |t| t.to_string()), w.is_active()));
+        }
     });
     app.window.connect_close_request(|_| {
         if let Some(a) = current() {
@@ -1699,6 +1712,7 @@ impl App {
             "network" | "net" => self.network_command(tab, &args, rest),
             "server" => self.server_command(tab, &args),
             "clear" | "c" => tab.clear(),
+            "focusinfo" => self.focus_info(tab),
             _ => {
                 // Unknown commands are passed to the server, as most clients do.
                 let connected = self.with_session_quiet(tab, |s| s.connected()).unwrap_or(false);
@@ -1935,6 +1949,57 @@ impl App {
     }
 
     // ----- printing helpers ------------------------------------------------------------------
+
+    /// What GTK believes about the window and the entry's focus, for tracking down a cursor
+    /// that isn't drawn (issue #15). GTK only draws the cursor if the window is active and
+    /// the text widget has the focus. Keys still arrive when it believes otherwise.
+    fn focus_info(&self, tab: &Rc<Tab>) {
+        let focus = gtk::prelude::RootExt::focus(&self.window);
+        let text = std::iter::successors(tab.entry.first_child(), |c| c.next_sibling()).find(|c| c.is::<gtk::Text>());
+        let toplevel = self.window.surface().and_then(|s| s.downcast::<gdk::Toplevel>().ok());
+        let settings = gtk::prelude::WidgetExt::settings(&self.window);
+        let lines = [
+            format!(
+                "GTK {}.{}.{}, {}, renderer {}",
+                gtk::major_version(),
+                gtk::minor_version(),
+                gtk::micro_version(),
+                gtk::prelude::WidgetExt::display(&self.window).type_().name(),
+                self.window.renderer().map_or("?".to_string(), |r| r.type_().name().to_string()),
+            ),
+            format!(
+                "window: active={} flags={:?} toplevel={:?}",
+                self.window.is_active(),
+                self.window.state_flags(),
+                toplevel.map(|t| t.state()),
+            ),
+            format!(
+                "focus widget: {} has_focus={} in_this_entry={}",
+                focus.as_ref().map_or("none".to_string(), |f| f.type_().name().to_string()),
+                focus.as_ref().is_some_and(|f| f.has_focus()),
+                focus.as_ref().is_some_and(|f| f.is_ancestor(&tab.entry)),
+            ),
+            format!(
+                "entry text: flags={:?} mapped={} width={} editable={} position={} selection={:?}",
+                text.as_ref().map(|t| t.state_flags()),
+                text.as_ref().is_some_and(|t| t.is_mapped()),
+                text.as_ref().map_or(0, |t| t.width()),
+                tab.entry.is_editable(),
+                tab.entry.position(),
+                tab.entry.selection_bounds(),
+            ),
+            format!(
+                "blink: on={} time={}ms timeout={}s",
+                settings.is_gtk_cursor_blink(),
+                settings.gtk_cursor_blink_time(),
+                settings.gtk_cursor_blink_timeout(),
+            ),
+            format!("active changes: {:?}", self.active_log.borrow()),
+        ];
+        for line in lines {
+            self.info(tab, &line);
+        }
+    }
 
     fn info(&self, tab: &Tab, text: &str) {
         tab.line(&[Part::Text("-!- ", "marker"), Part::Irc(text)], None);
