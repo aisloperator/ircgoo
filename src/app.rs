@@ -490,6 +490,16 @@ pub fn activate(gtk_app: &gtk::Application) {
     app.rebuild_connect_menu();
     app.setup_font_size();
     crate::theme::follow_desktop(crate::tab::set_dark_palette);
+    // A closing menu gives the focus to its button, where typing would be lost.
+    if let Some(menu) = app.menu_button.popover() {
+        menu.connect_closed(|_| {
+            glib::idle_add_local_once(|| {
+                if let Some(t) = current().and_then(|a| a.current_tab()) {
+                    t.entry.grab_focus_without_selecting();
+                }
+            });
+        });
+    }
     app.notebook.connect_switch_page(|_, page, _| {
         let page = page.clone();
         glib::idle_add_local_once(move || {
@@ -1043,6 +1053,65 @@ impl App {
         self.info(tab, "Type /help for a list of commands.");
     }
 
+    /// After using the pointer on the message view, put the focus back in the entry. The view
+    /// never shows a cursor, so otherwise the window looks as if it can't take input. If text
+    /// is selected, the focus stays so that Ctrl+C works. Keyboard focus moves are left alone.
+    fn return_focus_to_entry(&self, tab: &Rc<Tab>) {
+        // Raw events, because the view's own gestures claim presses from other gestures.
+        let events = gtk::EventControllerLegacy::new();
+        events.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let pressed = Rc::new(Cell::new(false));
+        let used = Rc::new(Cell::new(false));
+        let check = {
+            let (pressed, used, w) = (pressed.clone(), used.clone(), Rc::downgrade(tab));
+            move || {
+                let (pressed, used, w) = (pressed.clone(), used.clone(), w.clone());
+                // Deferred until the view has handled the event.
+                glib::idle_add_local_once(move || {
+                    let Some(t) = w.upgrade() else { return };
+                    // A context menu opens on press and takes the release. Wait for it to close,
+                    // which runs this again.
+                    if std::iter::successors(t.view.first_child(), |c| c.next_sibling())
+                        .any(|c| c.is::<gtk::Popover>() && c.is_visible())
+                    {
+                        pressed.set(false);
+                        return;
+                    }
+                    if used.get() && !pressed.get() && t.view.has_focus() {
+                        used.set(false);
+                        if !t.buffer.has_selection() {
+                            t.entry.grab_focus_without_selecting();
+                        }
+                    }
+                });
+            }
+        };
+        let on_event = check.clone();
+        events.connect_event(move |_, event| {
+            match event.event_type() {
+                gdk::EventType::ButtonPress | gdk::EventType::TouchBegin => {
+                    pressed.set(true);
+                    used.set(true);
+                }
+                gdk::EventType::ButtonRelease | gdk::EventType::TouchEnd | gdk::EventType::TouchCancel => {
+                    pressed.set(false);
+                    on_event();
+                }
+                _ => {}
+            }
+            glib::Propagation::Proceed
+        });
+        tab.view.add_controller(events);
+        let focus = gtk::EventControllerFocus::new();
+        // Not "enter": the context menu is the view's child, so closing it doesn't enter the view.
+        focus.connect_is_focus_notify(move |c| {
+            if c.is_focus() {
+                check();
+            }
+        });
+        tab.view.add_controller(focus);
+    }
+
     fn wire_tab(&self, tab: &Rc<Tab>) {
         tab.label.set_has_tooltip(true);
         let w = Rc::downgrade(tab);
@@ -1132,6 +1201,8 @@ impl App {
             }
         });
         tab.view.add_controller(press);
+
+        self.return_focus_to_entry(tab);
 
         if let Some(nl) = &tab.nicklist {
             let group = gio::SimpleActionGroup::new();
