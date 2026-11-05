@@ -34,6 +34,8 @@ notebook > header > tabs > tab { padding: 2px 8px; min-height: 0; }
 .ircgoo-nick { font-weight: bold; }
 .ircgoo-lag { color: #e66100; font-weight: bold; }
 .ircgoo-nicklist row { padding: 0 6px; min-height: 0; }
+/* With more text than fits, GTK puts the cursor just outside the text's clip area. */
+entry > text { padding-right: 2px; }
 ";
 
 const HELP: &[(&str, &str)] = &[
