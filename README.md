@@ -108,6 +108,7 @@ it; colours that other users put in their messages (mIRC colour codes) do not.
 | Ctrl+W | Close tab |
 | Ctrl+L | Clear the tab's messages (like `/clear`) |
 | Ctrl+Shift+L | Show or hide the nick list |
+| Ctrl+C | Copy the selected text, from the input field or else from the messages |
 | Ctrl+, | Preferences |
 | Ctrl+Q | Quit |
 | Tab | Complete a nick or channel |

@@ -1069,8 +1069,8 @@ impl App {
     }
 
     /// After using the pointer on the message view, put the focus back in the entry. The view
-    /// never shows a cursor, so otherwise the window looks as if it can't take input. If text
-    /// is selected, the focus stays so that Ctrl+C works. Keyboard focus moves are left alone.
+    /// never shows a cursor, so otherwise the window looks as if it can't take input. A
+    /// selection stays, and Ctrl+C in the entry copies it. Keyboard focus moves are left alone.
     fn return_focus_to_entry(&self, tab: &Rc<Tab>) {
         // Raw events, because the view's own gestures claim presses from other gestures.
         let events = gtk::EventControllerLegacy::new();
@@ -1094,9 +1094,7 @@ impl App {
                     }
                     if used.get() && !pressed.get() && t.view.has_focus() {
                         used.set(false);
-                        if !t.buffer.has_selection() {
-                            t.entry.grab_focus_without_selecting();
-                        }
+                        t.entry.grab_focus_without_selecting();
                     }
                 });
             }
@@ -1165,6 +1163,15 @@ impl App {
                 return glib::Propagation::Proceed;
             };
             let mods = state & (gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK);
+            // The entry's own selection comes first. Otherwise copy what's selected in the messages.
+            if mods == gdk::ModifierType::CONTROL_MASK
+                && key == gdk::Key::c
+                && t.entry.selection_bounds().is_none()
+                && t.buffer.has_selection()
+            {
+                t.buffer.copy_clipboard(&t.entry.clipboard());
+                return glib::Propagation::Stop;
+            }
             if !mods.is_empty() {
                 return glib::Propagation::Proceed;
             }
