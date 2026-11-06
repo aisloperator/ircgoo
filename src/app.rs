@@ -307,6 +307,8 @@ pub struct App {
     desktop_settings: Option<gio::Settings>,
     /// Recent changes of the window's active state, for `/focusinfo`.
     active_log: RefCell<VecDeque<String>>,
+    /// How often input arrived while the window counted as inactive, for `/focusinfo`.
+    focus_requests: Cell<u32>,
 }
 
 thread_local! {
@@ -487,6 +489,7 @@ pub fn activate(gtk_app: &gtk::Application) {
         quitting: Cell::new(false),
         font_css: gtk::CssProvider::new(),
         active_log: RefCell::new(VecDeque::new()),
+        focus_requests: Cell::new(0),
         desktop_settings: gnome_interface_settings(),
     });
     APP.with(|a| *a.borrow_mut() = Some(app.clone()));
@@ -523,6 +526,26 @@ pub fn activate(gtk_app: &gtk::Application) {
             log.push_back(format!("{} {}", time.map_or("?".into(), |t| t.to_string()), w.is_active()));
         }
     });
+    // On X11, while the input focus is on the root window (or follows the pointer), keys go to
+    // the window under the pointer. With an EWMH window manager GDK doesn't count that as focus,
+    // so GTK treats the window as inactive and draws no cursor while typing still works. xmonad
+    // can leave the focus there. Input arriving here means the user is here, so ask for the focus.
+    let events = gtk::EventControllerLegacy::new();
+    events.set_propagation_phase(gtk::PropagationPhase::Capture);
+    events.connect_event(|_, event| {
+        if matches!(
+            event.event_type(),
+            gdk::EventType::KeyPress | gdk::EventType::ButtonPress
+        ) && let Some(a) = current()
+            && !a.window.is_active()
+            && let Some(toplevel) = a.window.surface().and_then(|s| s.downcast::<gdk::Toplevel>().ok())
+        {
+            a.focus_requests.set(a.focus_requests.get() + 1);
+            toplevel.focus(event.time());
+        }
+        glib::Propagation::Proceed
+    });
+    app.window.add_controller(events);
     app.window.connect_close_request(|_| {
         if let Some(a) = current() {
             a.request_quit();
@@ -2002,6 +2025,7 @@ impl App {
                 settings.gtk_cursor_blink_timeout(),
             ),
             format!("active changes: {:?}", self.active_log.borrow()),
+            format!("focus requests: {}", self.focus_requests.get()),
         ];
         for line in lines {
             self.info(tab, &line);
