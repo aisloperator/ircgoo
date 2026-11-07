@@ -523,7 +523,12 @@ pub fn activate(gtk_app: &gtk::Application) {
                 log.pop_front();
             }
             let time = glib::DateTime::now_local().and_then(|t| t.format("%H:%M:%S"));
-            log.push_back(format!("{} {}", time.map_or("?".into(), |t| t.to_string()), w.is_active()));
+            let entry = format!("{} {}", time.map_or("?".into(), |t| t.to_string()), w.is_active());
+            // Temporary, for #15: places the change among GDK's focus lines in its debug output.
+            if std::env::var_os("GDK_DEBUG").is_some() {
+                eprintln!("ircgoo active: {entry}");
+            }
+            log.push_back(entry);
         }
     });
     // On X11, while the input focus is on the root window (or follows the pointer), keys go to
@@ -541,6 +546,9 @@ pub fn activate(gtk_app: &gtk::Application) {
             && let Some(toplevel) = a.window.surface().and_then(|s| s.downcast::<gdk::Toplevel>().ok())
         {
             a.focus_requests.set(a.focus_requests.get() + 1);
+            if std::env::var_os("GDK_DEBUG").is_some() {
+                eprintln!("ircgoo active: requesting focus");
+            }
             toplevel.focus(event.time());
         }
         glib::Propagation::Proceed
