@@ -34,7 +34,6 @@ notebook > header > tabs > tab { padding: 2px 8px; min-height: 0; }
 .ircgoo-nick { font-weight: bold; }
 .ircgoo-lag { color: #e66100; font-weight: bold; }
 .ircgoo-nicklist row { padding: 0 6px; min-height: 0; }
-popover.ircgoo-focus-kick { opacity: 0; }
 /* With more text than fits, GTK puts the cursor just outside the text's clip area. */
 entry > text { padding-right: 2px; }
 ";
@@ -310,8 +309,6 @@ pub struct App {
     active_log: RefCell<VecDeque<String>>,
     /// How often input arrived while the window counted as inactive, for `/focusinfo`.
     focus_requests: Cell<u32>,
-    focus_kick: Cell<Option<glib::SourceId>>,
-    focus_kicks: Cell<u32>,
 }
 
 thread_local! {
@@ -493,8 +490,6 @@ pub fn activate(gtk_app: &gtk::Application) {
         font_css: gtk::CssProvider::new(),
         active_log: RefCell::new(VecDeque::new()),
         focus_requests: Cell::new(0),
-        focus_kick: Cell::new(None),
-        focus_kicks: Cell::new(0),
         desktop_settings: gnome_interface_settings(),
     });
     APP.with(|a| *a.borrow_mut() = Some(app.clone()));
@@ -555,20 +550,6 @@ pub fn activate(gtk_app: &gtk::Application) {
                 eprintln!("ircgoo active: requesting focus");
             }
             toplevel.focus(event.time());
-            // If that doesn't work, X already has the focus here and GTK has lost track of it.
-            // Wait for a pause in the typing, because keys pressed during the kick are lost.
-            if let Some(pending) = a.focus_kick.take() {
-                pending.remove();
-            }
-            let pending = glib::timeout_add_local_once(Duration::from_millis(300), || {
-                if let Some(a) = current() {
-                    a.focus_kick.set(None);
-                    if !a.window.is_active() {
-                        a.kick_focus();
-                    }
-                }
-            });
-            a.focus_kick.set(Some(pending));
         }
         glib::Propagation::Proceed
     });
@@ -2007,29 +1988,6 @@ impl App {
 
     // ----- printing helpers ------------------------------------------------------------------
 
-    /// Make GTK notice that the window has the input focus. An autohide popover grabs the
-    /// keyboard, and letting go makes the window system report the focus again, which GTK
-    /// always believes. This one is invisible and closes straight away.
-    fn kick_focus(&self) {
-        let Some(tab) = self.current_tab() else { return };
-        self.focus_kicks.set(self.focus_kicks.get() + 1);
-        // Not on the entry, because GTK would then focus the entry the usual way when it closes,
-        // which selects the text.
-        let popover = gtk::Popover::builder().has_arrow(false).can_focus(false).build();
-        popover.add_css_class("ircgoo-focus-kick");
-        popover.set_parent(&self.notebook);
-        let entry = tab.entry.clone();
-        popover.connect_closed(move |p| {
-            let (p, entry) = (p.clone(), entry.clone());
-            glib::idle_add_local_once(move || {
-                p.unparent();
-                entry.grab_focus_without_selecting();
-            });
-        });
-        popover.popup();
-        glib::idle_add_local_once(move || popover.popdown());
-    }
-
     /// What GTK believes about the window and the entry's focus, for tracking down a cursor
     /// that isn't drawn (issue #15). GTK only draws the cursor if the window is active and
     /// the text widget has the focus. Keys still arrive when it believes otherwise.
@@ -2075,7 +2033,7 @@ impl App {
                 settings.gtk_cursor_blink_timeout(),
             ),
             format!("active changes: {:?}", self.active_log.borrow()),
-            format!("focus requests: {}, kicks: {}", self.focus_requests.get(), self.focus_kicks.get()),
+            format!("focus requests: {}", self.focus_requests.get()),
         ];
         for line in lines {
             self.info(tab, &line);
