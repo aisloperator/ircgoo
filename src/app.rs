@@ -538,6 +538,12 @@ pub fn activate(gtk_app: &gtk::Application) {
     let events = gtk::EventControllerLegacy::new();
     events.set_propagation_phase(gtk::PropagationPhase::Capture);
     events.connect_event(|_, event| {
+        // Temporary, for #15: the focus events GDK actually delivers to the window.
+        if let Some(focus) = event.downcast_ref::<gdk::FocusEvent>()
+            && std::env::var_os("GDK_DEBUG").is_some()
+        {
+            eprintln!("ircgoo gdk focus event: {}", if focus.is_in() { "in" } else { "out" });
+        }
         if matches!(
             event.event_type(),
             gdk::EventType::KeyPress | gdk::EventType::ButtonPress
