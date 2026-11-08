@@ -97,6 +97,14 @@ preference comes from the freedesktop settings portal (used by GNOME, KDE and ot
 from GNOME's color scheme setting when no portal provides it. Nick colours change with
 it; colours that other users put in their messages (mIRC colour codes) do not.
 
+## Known problems
+
+- On X11 with a window manager that doesn't support EWMH, GTK 4 can lose track of the
+  window's focus. The input field then shows no cursor, although typing still works. This
+  is a GTK bug that affects all GTK 4 programs. With xmonad it happens when switching
+  desktops while holding the modifier key. Turning on EWMH fixes it (for xmonad,
+  `main = xmonad $ ewmh def { ... }` from `XMonad.Hooks.EwmhDesktops`).
+
 ## Keyboard
 
 | Key | Action |
