@@ -1233,6 +1233,31 @@ impl App {
         });
         tab.view.add_controller(press);
 
+        // The text view creates its context menu on first use, as a child. Follow it opening
+        // and closing, however it was opened (right click, long press or the Menu key).
+        let children = tab.view.observe_children();
+        let w = Rc::downgrade(tab);
+        children.connect_items_changed(move |list, pos, _, added| {
+            for i in pos..pos + added {
+                let Some(menu) = list.item(i).and_downcast::<gtk::PopoverMenu>() else {
+                    continue;
+                };
+                let w2 = w.clone();
+                menu.connect_show(move |_| {
+                    if let Some(t) = w2.upgrade() {
+                        t.set_menu_open(true);
+                    }
+                });
+                let w2 = w.clone();
+                menu.connect_closed(move |_| {
+                    if let Some(t) = w2.upgrade() {
+                        t.set_menu_open(false);
+                    }
+                });
+            }
+        });
+        *tab.view_children.borrow_mut() = Some(children);
+
         self.return_focus_to_entry(tab);
 
         if let Some(nl) = &tab.nicklist {

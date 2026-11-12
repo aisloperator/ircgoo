@@ -104,6 +104,11 @@ pub struct Tab {
     link_hover: RefCell<Option<(gtk::TextMark, gtk::TextMark)>>,
     /// Where the pointer is in the message view, while it is there.
     pointer: Cell<Option<(f64, f64)>>,
+    /// Marks around the web address the context menu's "Open Link" acts on.
+    menu_link: RefCell<Option<(gtk::TextMark, gtk::TextMark)>>,
+    menu_open: Cell<bool>,
+    /// The message view's children, watched for its context menu.
+    pub view_children: RefCell<Option<gio::ListModel>>,
     pub scroller: gtk::ScrolledWindow,
     end_mark: gtk::TextMark,
     /// Whether the view should stay scrolled to the end: true until the user scrolls away from it.
@@ -392,6 +397,9 @@ impl Tab {
             link_menu,
             link_hover: RefCell::new(None),
             pointer: Cell::new(None),
+            menu_link: RefCell::new(None),
+            menu_open: Cell::new(false),
+            view_children: RefCell::new(None),
             scroller,
             end_mark,
             follow_end,
@@ -482,26 +490,39 @@ impl Tab {
         }
     }
 
-    /// Offer "Open Link" in the context menu only if view position `x`, `y` is on a URL.
+    /// Offer "Open Link" in the context menu only if view position `x`, `y` is on a URL, and
+    /// remember that URL so it stays highlighted while the menu is open.
     pub fn update_link_menu(&self, x: f64, y: f64) {
         self.link_menu.remove_all();
-        let (bx, by) = self
-            .view
-            .window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
-        let Some(iter) = self.view.iter_at_location(bx, by) else {
-            return;
-        };
-        let mut start = iter;
-        start.set_line_offset(0);
-        let mut end = iter;
-        if !end.ends_line() {
-            end.forward_to_line_end();
+        let range = self.link_range_at(x, y);
+        if let Some((start, _)) = &range {
+            let mut line_start = *start;
+            line_start.set_line_offset(0);
+            let mut line_end = *start;
+            if !line_end.ends_line() {
+                line_end.forward_to_line_end();
+            }
+            let text = self.buffer.text(&line_start, &line_end, true);
+            if let Some(url) = irc::url_at(&text, start.line_offset() as usize) {
+                let item = gio::MenuItem::new(Some("Open Link"), None);
+                item.set_action_and_target_value(Some("win.open-link"), Some(&url.to_variant()));
+                self.link_menu.append_item(&item);
+            }
         }
-        let text = self.buffer.text(&start, &end, true);
-        if let Some(url) = irc::url_at(&text, iter.line_offset() as usize) {
-            let item = gio::MenuItem::new(Some("Open Link"), None);
-            item.set_action_and_target_value(Some("win.open-link"), Some(&url.to_variant()));
-            self.link_menu.append_item(&item);
+        self.set_marks(&self.menu_link, range);
+    }
+
+    /// The context menu opened or closed. While it's open, the URL it acts on stays
+    /// highlighted, wherever the pointer goes.
+    pub fn set_menu_open(&self, open: bool) {
+        self.menu_open.set(open);
+        if open {
+            let range = self.menu_link.borrow().as_ref().map(|(s, e)| {
+                (self.buffer.iter_at_mark(s), self.buffer.iter_at_mark(e))
+            });
+            self.highlight(range);
+        } else {
+            self.update_link_hover();
         }
     }
 
@@ -514,42 +535,62 @@ impl Tab {
     /// Highlight the web address under the pointer, if any. It costs a tag lookup at one
     /// position, so it can run on every pointer motion and scroll.
     pub fn update_link_hover(&self) {
-        let range = self.pointer.get().and_then(|(x, y)| {
-            let (bx, by) = self
-                .view
-                .window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
-            let iter = self.view.iter_at_location(bx, by)?;
-            let link = self.buffer.tag_table().lookup("link")?;
-            if !iter.has_tag(&link) {
-                return None;
-            }
-            let (mut start, mut end) = (iter, iter);
-            if !start.starts_tag(Some(&link)) {
-                start.backward_to_tag_toggle(Some(&link));
-            }
-            end.forward_to_tag_toggle(Some(&link));
-            Some((start, end))
+        if self.menu_open.get() {
+            return;
+        }
+        let range = self.pointer.get().and_then(|(x, y)| self.link_range_at(x, y));
+        self.highlight(range);
+    }
+
+    /// The web address at view position `x`, `y`, from the tags added with each line.
+    fn link_range_at(&self, x: f64, y: f64) -> Option<(gtk::TextIter, gtk::TextIter)> {
+        let (bx, by) = self
+            .view
+            .window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
+        let iter = self.view.iter_at_location(bx, by)?;
+        let link = self.buffer.tag_table().lookup("link")?;
+        if !iter.has_tag(&link) {
+            return None;
+        }
+        let (mut start, mut end) = (iter, iter);
+        if !start.starts_tag(Some(&link)) {
+            start.backward_to_tag_toggle(Some(&link));
+        }
+        end.forward_to_tag_toggle(Some(&link));
+        Some((start, end))
+    }
+
+    /// Show the highlight on `range` only, or on nothing.
+    fn highlight(&self, range: Option<(gtk::TextIter, gtk::TextIter)>) {
+        let current = self.link_hover.borrow().as_ref().map(|(s, e)| {
+            (self.buffer.iter_at_mark(s).offset(), self.buffer.iter_at_mark(e).offset())
         });
-        let mut hover = self.link_hover.borrow_mut();
-        let current = hover
-            .as_ref()
-            .map(|(s, e)| (self.buffer.iter_at_mark(s).offset(), self.buffer.iter_at_mark(e).offset()));
         if current == range.map(|(s, e)| (s.offset(), e.offset())) {
             return;
         }
-        if let Some((s, e)) = hover.take() {
-            let (start, end) = (self.buffer.iter_at_mark(&s), self.buffer.iter_at_mark(&e));
+        if let Some((s, e)) = self.link_hover.borrow().as_ref() {
+            let (start, end) = (self.buffer.iter_at_mark(s), self.buffer.iter_at_mark(e));
             self.buffer.remove_tag_by_name("link-hover", &start, &end);
-            self.buffer.delete_mark(&s);
-            self.buffer.delete_mark(&e);
         }
         if let Some((start, end)) = range {
             self.buffer.apply_tag_by_name("link-hover", &start, &end);
-            *hover = Some((
-                self.buffer.create_mark(None, &start, true),
-                self.buffer.create_mark(None, &end, false),
-            ));
         }
+        self.set_marks(&self.link_hover, range);
+    }
+
+    /// Replace the marks in `slot` with marks around `range`, or none.
+    fn set_marks(
+        &self,
+        slot: &RefCell<Option<(gtk::TextMark, gtk::TextMark)>>,
+        range: Option<(gtk::TextIter, gtk::TextIter)>,
+    ) {
+        if let Some((s, e)) = slot.take() {
+            self.buffer.delete_mark(&s);
+            self.buffer.delete_mark(&e);
+        }
+        *slot.borrow_mut() = range.map(|(start, end)| {
+            (self.buffer.create_mark(None, &start, true), self.buffer.create_mark(None, &end, false))
+        });
     }
 
     pub fn clear(&self) {

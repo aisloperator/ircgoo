@@ -39,7 +39,8 @@ help on getting connected.
   significant.
 - Selectable, copyable message text with mIRC colours and formatting. Every line starts
   with the local time (`hh:mm:ss`).
-- Web addresses in messages are highlighted in blue while the pointer is over them.
+- Web addresses in messages are highlighted in blue while the pointer is over them, and
+  while a context menu for one is open.
   Right-click (or long-press) one and choose Open Link to open it in the default browser.
   A plain click never opens a link.
 - Server messages for a network appear in all of that network's tabs, so you see them
