@@ -277,11 +277,23 @@ pub fn strip_formatting(s: &str) -> String {
 /// A URL without a scheme (`www.example.org`) gets `https://`. Punctuation after a URL, such
 /// as a sentence's full stop or the closing bracket of `(http://example.org)`, is left out.
 pub fn url_at(text: &str, pos: usize) -> Option<String> {
+    let (start, end) = url_spans(text).into_iter().find(|&(s, e)| s <= pos && pos < e)?;
+    let url: String = text.chars().skip(start).take(end - start).collect();
+    Some(if url.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("www.")) {
+        format!("https://{url}")
+    } else {
+        url
+    })
+}
+
+/// The character ranges of the web URLs in `text`, as recognized by [`url_at`].
+pub fn url_spans(text: &str) -> Vec<(usize, usize)> {
     const PREFIXES: [&str; 3] = ["https://", "http://", "www."];
     let chars: Vec<char> = text.chars().collect();
     let lower: Vec<char> = chars.iter().map(char::to_ascii_lowercase).collect();
+    let mut spans = Vec::new();
     let mut i = 0;
-    while i < chars.len() && i <= pos {
+    while i < chars.len() {
         let boundary = i == 0 || !chars[i - 1].is_alphanumeric();
         let prefix = PREFIXES
             .iter()
@@ -310,17 +322,12 @@ pub fn url_at(text: &str, pos: usize) -> Option<String> {
             }
             end -= 1;
         }
-        if end > i + prefix.len() && pos < end {
-            let url: String = chars[i..end].iter().collect();
-            return Some(if *prefix == "www." {
-                format!("https://{url}")
-            } else {
-                url
-            });
+        if end > i + prefix.len() {
+            spans.push((i, end));
         }
         i = url_end.max(i + 1);
     }
-    None
+    spans
 }
 
 /// WHOIS requests waiting for replies, oldest first, each with a value for its requester.
@@ -521,6 +528,12 @@ mod tests {
         assert_eq!(url_at("http://", 3), None);
         assert_eq!(url_at("www.", 1), None);
         assert_eq!(url_at("", 0), None);
+    }
+
+    #[test]
+    fn url_spans_finds_every_url() {
+        assert_eq!(url_spans("see http://a.example and (www.b.example)."), vec![(4, 20), (26, 39)]);
+        assert_eq!(url_spans("no links here"), vec![]);
     }
 
     #[test]

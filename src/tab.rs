@@ -31,6 +31,9 @@ const TAG_COLORS: [(&str, &str, &str); 7] = [
     ("notice", "#a347ba", "#dc8add"),
 ];
 
+/// The web address under the pointer: dark blue for light themes, light blue for dark ones.
+const LINK_HOVER_COLORS: (&str, &str) = ("#1a5fb4", "#99c1f1");
+
 const MIRC_COLORS: [&str; 16] = [
     "#ffffff", "#000000", "#00007f", "#009300", "#ff0000", "#7f0000", "#9c009c", "#fc7f00", "#ffff00", "#00fc00",
     "#009393", "#00ffff", "#0000fc", "#ff00ff", "#7f7f7f", "#d2d2d2",
@@ -97,6 +100,10 @@ pub struct Tab {
     pub buffer: gtk::TextBuffer,
     /// Extra context menu section: "Open Link" when the pointer was last pressed on a URL.
     link_menu: gio::Menu,
+    /// Marks around the highlighted web address, while the pointer is over one.
+    link_hover: RefCell<Option<(gtk::TextMark, gtk::TextMark)>>,
+    /// Where the pointer is in the message view, while it is there.
+    pointer: Cell<Option<(f64, f64)>>,
     pub scroller: gtk::ScrolledWindow,
     end_mark: gtk::TextMark,
     /// Whether the view should stay scrolled to the end: true until the user scrolls away from it.
@@ -156,6 +163,14 @@ fn build_tag_table() -> gtk::TextTagTable {
         add(gtk::TextTag::builder().name(format!("fg{i}")).foreground(*c).build());
         add(gtk::TextTag::builder().name(format!("bg{i}")).background(*c).build());
     }
+    // Marks web addresses as lines are added, so hovering only has to look up a tag.
+    add(gtk::TextTag::builder().name("link").build());
+    // Added last, so its colour wins over nick and mIRC colours.
+    add(gtk::TextTag::builder()
+        .name("link-hover")
+        .foreground(LINK_HOVER_COLORS.0)
+        .underline(pango::Underline::Single)
+        .build());
     table
 }
 
@@ -175,6 +190,7 @@ pub fn set_dark_palette(dark: bool) {
         for (i, c) in nick_colors.iter().enumerate() {
             set(&format!("nick{i}"), c);
         }
+        set("link-hover", if dark { LINK_HOVER_COLORS.1 } else { LINK_HOVER_COLORS.0 });
     });
 }
 
@@ -374,6 +390,8 @@ impl Tab {
             view,
             buffer,
             link_menu,
+            link_hover: RefCell::new(None),
+            pointer: Cell::new(None),
             scroller,
             end_mark,
             follow_end,
@@ -412,10 +430,10 @@ impl Tab {
     pub fn line(&self, parts: &[Part], line_tag: Option<&str>) {
         let buf = &self.buffer;
         let mut iter = buf.end_iter();
-        let line_start = iter.offset();
         if self.lines.get() > 0 {
             buf.insert(&mut iter, "\n");
         }
+        let line_start = iter.offset();
         buf.insert_with_tags_by_name(&mut iter, &now_hms(), &["time"]);
         buf.insert(&mut iter, " ");
         for part in parts {
@@ -443,6 +461,11 @@ impl Tab {
         if let Some(tag) = line_tag {
             let start = buf.iter_at_offset(line_start);
             buf.apply_tag_by_name(tag, &start, &buf.end_iter());
+        }
+        let text = buf.text(&buf.iter_at_offset(line_start), &buf.end_iter(), true);
+        for (s, e) in irc::url_spans(&text) {
+            let (s, e) = (line_start + s as i32, line_start + e as i32);
+            buf.apply_tag_by_name("link", &buf.iter_at_offset(s), &buf.iter_at_offset(e));
         }
         self.lines.set(self.lines.get() + 1);
         if self.lines.get() > MAX_LINES {
@@ -479,6 +502,53 @@ impl Tab {
             let item = gio::MenuItem::new(Some("Open Link"), None);
             item.set_action_and_target_value(Some("win.open-link"), Some(&url.to_variant()));
             self.link_menu.append_item(&item);
+        }
+    }
+
+    /// The pointer moved to view position `x`, `y`, or `None` when it left the view.
+    pub fn set_pointer(&self, pos: Option<(f64, f64)>) {
+        self.pointer.set(pos);
+        self.update_link_hover();
+    }
+
+    /// Highlight the web address under the pointer, if any. It costs a tag lookup at one
+    /// position, so it can run on every pointer motion and scroll.
+    pub fn update_link_hover(&self) {
+        let range = self.pointer.get().and_then(|(x, y)| {
+            let (bx, by) = self
+                .view
+                .window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
+            let iter = self.view.iter_at_location(bx, by)?;
+            let link = self.buffer.tag_table().lookup("link")?;
+            if !iter.has_tag(&link) {
+                return None;
+            }
+            let (mut start, mut end) = (iter, iter);
+            if !start.starts_tag(Some(&link)) {
+                start.backward_to_tag_toggle(Some(&link));
+            }
+            end.forward_to_tag_toggle(Some(&link));
+            Some((start, end))
+        });
+        let mut hover = self.link_hover.borrow_mut();
+        let current = hover
+            .as_ref()
+            .map(|(s, e)| (self.buffer.iter_at_mark(s).offset(), self.buffer.iter_at_mark(e).offset()));
+        if current == range.map(|(s, e)| (s.offset(), e.offset())) {
+            return;
+        }
+        if let Some((s, e)) = hover.take() {
+            let (start, end) = (self.buffer.iter_at_mark(&s), self.buffer.iter_at_mark(&e));
+            self.buffer.remove_tag_by_name("link-hover", &start, &end);
+            self.buffer.delete_mark(&s);
+            self.buffer.delete_mark(&e);
+        }
+        if let Some((start, end)) = range {
+            self.buffer.apply_tag_by_name("link-hover", &start, &end);
+            *hover = Some((
+                self.buffer.create_mark(None, &start, true),
+                self.buffer.create_mark(None, &end, false),
+            ));
         }
     }
 

@@ -1199,6 +1199,28 @@ impl App {
         });
         tab.view.add_controller(view_keys);
 
+        // Highlight the web address under the pointer, also when the text scrolls beneath it.
+        let motion = gtk::EventControllerMotion::new();
+        let w = Rc::downgrade(tab);
+        motion.connect_motion(move |_, x, y| {
+            if let Some(t) = w.upgrade() {
+                t.set_pointer(Some((x, y)));
+            }
+        });
+        let w = Rc::downgrade(tab);
+        motion.connect_leave(move |_| {
+            if let Some(t) = w.upgrade() {
+                t.set_pointer(None);
+            }
+        });
+        tab.view.add_controller(motion);
+        let w = Rc::downgrade(tab);
+        tab.scroller.vadjustment().connect_value_changed(move |_| {
+            if let Some(t) = w.upgrade() {
+                t.update_link_hover();
+            }
+        });
+
         // Runs before the text view opens its context menu, for a right click or a long press.
         let press = gtk::GestureClick::new();
         press.set_button(0);

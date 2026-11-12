@@ -39,8 +39,9 @@ help on getting connected.
   significant.
 - Selectable, copyable message text with mIRC colours and formatting. Every line starts
   with the local time (`hh:mm:ss`).
-- Right-click (or long-press) a web address in a message and choose Open Link to open it
-  in the default browser. A plain click never opens a link.
+- Web addresses in messages are highlighted in blue while the pointer is over them.
+  Right-click (or long-press) one and choose Open Link to open it in the default browser.
+  A plain click never opens a link.
 - Server messages for a network appear in all of that network's tabs, so you see them
   without leaving the channel. Replies about a channel that has a tab go only to that tab,
   and `/whois` replies go to the tab where you ran it.
