@@ -148,6 +148,7 @@ Typing while the message area has focus goes to the input field.
 | `/invite <nick> [#chan]` | Invite a user |
 | `/away [message]` | Set or clear away status |
 | `/ctcp <target> <command> [args]` | Send a CTCP request |
+| `/ping [nick]` | Measure the round trip to a user (CTCP PING; in a private chat, the other user) |
 | `/network [list]` | List configured networks |
 | `/network connect <name>` | Connect to a network |
 | `/network disconnect [name]` | Disconnect from a network |

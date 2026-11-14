@@ -56,6 +56,7 @@ const HELP: &[(&str, &str)] = &[
     ("/invite <nick> [#chan]", "Invite a user to a channel"),
     ("/away [message]", "Set or clear away status"),
     ("/ctcp <target> <command> [args]", "Send a CTCP request"),
+    ("/ping [nick]", "Measure the round trip to a user (CTCP PING)"),
     ("/network [list]", "List configured networks"),
     ("/network connect <name>", "Connect to a network"),
     ("/network disconnect [name]", "Disconnect from a network"),
@@ -1619,6 +1620,17 @@ impl App {
                 };
                 if !line.is_empty() {
                     self.send_cmd(tab, &line);
+                }
+            }
+            // Like /ctcp <nick> PING. In a private chat the nick defaults to the other user.
+            "ping" => {
+                let target = args.first().map(|s| s.to_string()).or_else(|| match tab.kind() {
+                    TabKind::Query(_, nick) => Some(nick),
+                    _ => None,
+                });
+                match target {
+                    Some(target) => self.run_command(tab, &format!("ctcp {target} PING")),
+                    None => usage("/ping <nick>"),
                 }
             }
             "ctcp" => {
