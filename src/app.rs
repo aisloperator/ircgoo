@@ -1939,8 +1939,10 @@ impl App {
             );
         };
         if let Some(c) = s.conn.take() {
-            c.send(irc::build("QUIT", &["Changing servers"]));
+            let reason = "Changing servers";
+            c.send(irc::build("QUIT", &[reason]));
             c.close();
+            self.own_quit_line(s, reason);
         }
         self.reset_session(s);
         s.server_idx = idx;
@@ -2194,10 +2196,26 @@ impl App {
         if let Some(c) = s.conn.take() {
             if matches!(s.state, ConnState::Registering | ConnState::Connected) {
                 c.send(irc::build("QUIT", &[reason]));
+                self.own_quit_line(s, reason);
             }
             c.close();
             s.conn_id = self.new_id();
             self.on_disconnected(s, "Disconnected");
+        }
+    }
+
+    /// Show our own QUIT, with its reason, in every tab of the session's network.
+    fn own_quit_line(&self, s: &Session, reason: &str) {
+        let text = format!(" has quit {} [{reason}]", s.name);
+        for t in self.net_tabs(&s.name) {
+            t.line(
+                &[
+                    Part::Text("-!- ", "marker"),
+                    Part::Nick(&s.nick),
+                    Part::Text(&text, "part"),
+                ],
+                None,
+            );
         }
     }
 
