@@ -330,6 +330,32 @@ pub fn url_spans(text: &str) -> Vec<(usize, usize)> {
     spans
 }
 
+/// The longest emoji sequence (in chars) that [`emoji_at`] looks for, such as a family with
+/// skin tones joined by zero-width joiners.
+const EMOJI_MAX_CHARS: usize = 16;
+
+/// The name of the emoji in `text` that covers character index `pos`, such as "grinning
+/// face" or "thumbs up: medium skin tone" (the Unicode CLDR short name). Text is scanned from
+/// the start, taking the longest emoji at each position, so a sequence like a flag or a
+/// family is named as a whole. Plain ASCII, such as `#` or `1`, is never an emoji.
+pub fn emoji_at(text: &str, pos: usize) -> Option<&'static str> {
+    // Byte offset of each char, plus the end.
+    let bounds: Vec<usize> = text.char_indices().map(|(b, _)| b).chain([text.len()]).collect();
+    let mut i = 0;
+    while i < bounds.len() - 1 && i <= pos {
+        let longest = (1..=EMOJI_MAX_CHARS.min(bounds.len() - 1 - i)).rev().find_map(|n| {
+            let s = &text[bounds[i]..bounds[i + n]];
+            (!s.is_ascii()).then(|| emojis::get(s)).flatten().map(|e| (n, e))
+        });
+        match longest {
+            Some((n, e)) if pos < i + n => return Some(e.name()),
+            Some((n, _)) => i += n,
+            None => i += 1,
+        }
+    }
+    None
+}
+
 /// WHOIS requests waiting for replies, oldest first, each with a value for its requester.
 /// Servers answer in order, so several requests for one nick are matched first to first.
 /// `nick` arguments must be in `irc_lower` form.
@@ -483,6 +509,30 @@ mod tests {
         assert!(!w.contains("n0"));
         assert_eq!(w.reply("n1", "311"), Some(1));
         assert_eq!(w.reply("n100", "311"), Some(100));
+    }
+
+    #[test]
+    fn emoji_at_names_emoji() {
+        let t = "hi \u{1F600} there";
+        assert_eq!(emoji_at(t, 3), Some("grinning face"));
+        assert_eq!(emoji_at(t, 2), None);
+        assert_eq!(emoji_at(t, 4), None);
+        assert_eq!(emoji_at("\u{2764}\u{FE0F}", 1), Some("red heart"));
+        assert_eq!(emoji_at("# 1 ok", 0), None);
+        assert_eq!(emoji_at("# 1 ok", 2), None);
+    }
+
+    #[test]
+    fn emoji_at_names_sequences_whole() {
+        let thumbs = "\u{1F44D}\u{1F3FD}";
+        assert_eq!(emoji_at(thumbs, 0), Some("thumbs up: medium skin tone"));
+        assert_eq!(emoji_at(thumbs, 1), Some("thumbs up: medium skin tone"));
+        let flags = "\u{1F1E8}\u{1F1E6}\u{1F1EB}\u{1F1F7}";
+        assert_eq!(emoji_at(flags, 1), Some("flag: Canada"));
+        assert_eq!(emoji_at(flags, 2), Some("flag: France"));
+        let family = "a\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}b";
+        assert_eq!(emoji_at(family, 3), Some("family: man, woman, girl"));
+        assert_eq!(emoji_at(family, 6), None);
     }
 
     #[test]

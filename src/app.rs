@@ -1222,6 +1222,18 @@ impl App {
             }
         });
 
+        // Name the emoji under the pointer, for small text or an unfamiliar emoji.
+        tab.view.set_has_tooltip(true);
+        let w = Rc::downgrade(tab);
+        tab.view.connect_query_tooltip(move |_, x, y, keyboard, tooltip| {
+            let Some((name, area)) = w.upgrade().filter(|_| !keyboard).and_then(|t| t.emoji_at(x, y)) else {
+                return false;
+            };
+            tooltip.set_text(Some(name));
+            tooltip.set_tip_area(&area);
+            true
+        });
+
         // Runs before the text view opens its context menu, for a right click or a long press.
         let press = gtk::GestureClick::new();
         press.set_button(0);

@@ -9,6 +9,7 @@ homepage = "https://www.aisloperator.com/"
 publish = false
 
 [dependencies]
+emojis = "0.9.1"
 # Only GTK APIs up to 4.8 are enabled, so IrcGoo builds against the GTK in Debian bookworm / PureOS.
 # gtk4 0.11 needs Rust 1.92 (see rust-version).
 gtk = { version = "0.11.5", package = "gtk4", features = ["v4_8"] }

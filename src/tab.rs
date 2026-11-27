@@ -542,6 +542,27 @@ impl Tab {
         self.highlight(range);
     }
 
+    /// The name of the emoji at view position `x`, `y`, if any, with the area it covers in
+    /// view coordinates.
+    pub fn emoji_at(&self, x: i32, y: i32) -> Option<(&'static str, gdk::Rectangle)> {
+        let (bx, by) = self.view.window_to_buffer_coords(gtk::TextWindowType::Widget, x, y);
+        let (iter, _) = self.view.iter_at_position(bx, by)?;
+        let rect = self.view.iter_location(&iter);
+        if bx < rect.x() || bx >= rect.x() + rect.width().max(1) {
+            return None;
+        }
+        let mut line_start = iter;
+        line_start.set_line_offset(0);
+        let mut line_end = iter;
+        if !line_end.ends_line() {
+            line_end.forward_to_line_end();
+        }
+        let text = self.buffer.text(&line_start, &line_end, true);
+        let name = irc::emoji_at(&text, iter.line_offset() as usize)?;
+        let (wx, wy) = self.view.buffer_to_window_coords(gtk::TextWindowType::Widget, rect.x(), rect.y());
+        Some((name, gdk::Rectangle::new(wx, wy, rect.width(), rect.height())))
+    }
+
     /// The web address at view position `x`, `y`, from the tags added with each line.
     fn link_range_at(&self, x: f64, y: f64) -> Option<(gtk::TextIter, gtk::TextIter)> {
         let (bx, by) = self
