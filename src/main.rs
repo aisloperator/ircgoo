@@ -9,6 +9,7 @@ mod socks;
 mod tab;
 mod theme;
 mod tls;
+mod x509;
 
 use gtk::glib;
 use gtk::prelude::*;

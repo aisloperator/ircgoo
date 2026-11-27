@@ -3,7 +3,7 @@
 
 use crate::config::{Proxy, describe_addr};
 use crate::socks;
-use crate::tls::{self, TlsSettings};
+use crate::tls::{self, CertRejection, TlsSettings};
 use gtk::glib;
 use rustls::pki_types::ServerName;
 use rustls::{ClientConnection, StreamOwned};
@@ -21,6 +21,9 @@ pub enum NetEvent {
     Status(String),
     Connected,
     Line(String),
+    /// The server's certificate was refused for a reason the user may override. A
+    /// `Disconnected` follows.
+    CertRejected(CertRejection),
     Disconnected(String),
 }
 
@@ -173,7 +176,7 @@ fn run(id: u64, p: &ConnectParams, sink: &EventSink, rx: &mpsc::Receiver<Cmd>) -
     let _ = sock.set_nodelay(true);
 
     let mut stream = if p.tls {
-        let config = match tls::client_config(&p.tls_settings) {
+        let (config, rejection) = match tls::client_config(&p.tls_settings) {
             Ok(c) => c,
             Err(e) => return e,
         };
@@ -189,6 +192,9 @@ fn run(id: u64, p: &ConnectParams, sink: &EventSink, rx: &mpsc::Receiver<Cmd>) -
         let _ = sock.set_read_timeout(Some(CONNECT_TIMEOUT));
         while conn.is_handshaking() {
             if let Err(e) = conn.complete_io(&mut sock) {
+                if let Some(r) = rejection.lock().unwrap().take() {
+                    sink.send(id, NetEvent::CertRejected(r));
+                }
                 return format!("TLS handshake failed: {e}");
             }
         }

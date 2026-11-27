@@ -30,6 +30,11 @@ help on getting connected.
 - Per-network TLS trust: the system CA bundle and/or extra PEM files. A file may contain
   a CA certificate or a server's own (for example self-signed) certificate, which is then
   trusted exactly.
+- When a server's certificate is refused because it is self-signed, not signed by a
+  trusted authority, expired or issued for another host name, IrcGoo shows the
+  certificate and asks whether to trust it. A trusted certificate is remembered for that
+  network (exactly that certificate; a network can have several), and the Networks
+  window lists them so they can be removed.
 - IRC bouncer support (ZNC style `PASS user/network:password`).
 - Per-network nick, username and real name overrides.
 - Channel nick lists, sorted by rank. A context menu offers private chat, whois, op/deop,
@@ -171,7 +176,8 @@ message that begins with `/`.
   loop through a channel. There is no async runtime.
 - Dependencies are deliberately few: `gtk4` (only APIs up to GTK 4.8, so it runs on
   Debian bookworm and PureOS), `rustls` with the `ring` backend, and `rustls-native-certs`.
-  Configuration uses GLib's key file support, and SOCKS5, SASL and IRC parsing are
-  implemented here.
+  (`rustls-webpki`, part of rustls, is also named directly to recognize its errors.)
+  Configuration uses GLib's key file support, and SOCKS5, SASL, IRC parsing and the
+  little X.509 decoding needed to show a certificate are implemented here.
 - libadwaita is not used yet. The layout is meant to become adaptive for Linux phones
   later.

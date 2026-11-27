@@ -4,7 +4,7 @@ use crate::config::{Config, Network, Sasl, SaslMech};
 use crate::irc::{self, Message, irc_eq, irc_lower};
 use crate::net::{self, ConnectParams, Connection, EventSink, NetEvent};
 use crate::tab::{Activity, Completion, Part, Tab, TabKind};
-use crate::tls::TlsSettings;
+use crate::tls::{CertRejection, TlsSettings};
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 use std::cell::{Cell, RefCell};
@@ -174,6 +174,12 @@ struct Session {
     last_ctcp_reply: HashMap<&'static str, Instant>,
     /// Host, port and TLS of the server (or bouncer) last connected to.
     endpoint: Option<(String, u16, bool)>,
+    /// A refused server certificate to ask the user about when the connection ends.
+    cert_pending: Option<CertRejection>,
+    /// The user is being asked whether to trust a certificate; reconnecting waits for it.
+    cert_dialog_open: bool,
+    /// Server certificates (DER) that the user declined to trust while IrcGoo runs.
+    rejected_certs: HashSet<Vec<u8>>,
 }
 
 impl Session {
@@ -207,6 +213,9 @@ impl Session {
             user_joins: HashSet::new(),
             last_ctcp_reply: HashMap::new(),
             endpoint: None,
+            cert_pending: None,
+            cert_dialog_open: false,
+            rejected_certs: HashSet::new(),
         }
     }
 
@@ -2286,9 +2295,17 @@ impl App {
                 use_system_cas: s.cfg.use_system_cas,
                 trusted_certs: s.cfg.trusted_certs.iter().map(PathBuf::from).collect(),
                 client_cert,
+                accepted_certs: s
+                    .cfg
+                    .accepted_certs
+                    .iter()
+                    .map(|c| glib::base64_decode(c))
+                    .filter(|d| !d.is_empty())
+                    .collect(),
             },
         };
         s.endpoint = Some((params.host.clone(), params.port, params.tls));
+        s.cert_pending = None;
         let id = self.new_id();
         s.conn_id = id;
         s.sasl_current = sasl;
@@ -2318,28 +2335,204 @@ impl App {
         for t in self.net_tabs(&s.name) {
             self.error(&t, reason);
         }
+        let cert = s.cert_pending.take();
         if s.want_connected && !self.quitting.get() {
-            let n = s.cfg.servers.len().max(1);
-            if !was_registered && !s.cfg.bouncer.enabled {
-                s.server_idx = (s.server_idx + 1) % n;
-            }
-            s.failures += 1;
-            let delay = if s.failures as usize > n { 30 } else { 5 };
-            self.server_info(
-                &s.name,
-                &format!("Reconnecting in {delay} seconds… (/network disconnect to stop)"),
-            );
-            let name = s.name.clone();
-            s.reconnect_source = Some(glib::timeout_add_seconds_local_once(delay, move || {
-                let Some(a) = current() else { return };
-                let mut sessions = a.sessions.borrow_mut();
-                if let Some(s) = sessions.iter_mut().find(|s| s.name == name) {
-                    s.reconnect_source = None;
-                    if s.want_connected && s.conn.is_none() {
-                        a.start_connect(s);
+            if let Some(r) = cert
+                && !s.cert_dialog_open
+            {
+                s.cert_dialog_open = true;
+                self.server_info(
+                    &s.name,
+                    "Waiting for you to decide whether to trust the server's certificate…",
+                );
+                let (host, port) = s.endpoint.clone().map(|(h, p, _)| (h, p)).unwrap_or_default();
+                let name = s.name.clone();
+                // Not while the sessions are borrowed.
+                glib::idle_add_local_once(move || {
+                    if let Some(a) = current() {
+                        a.show_cert_dialog(&name, &host, port, r);
                     }
+                });
+                return;
+            }
+            self.schedule_reconnect(s, was_registered);
+        }
+    }
+
+    /// Move on to the next server (unless the last one worked) and reconnect after a delay.
+    fn schedule_reconnect(&self, s: &mut Session, was_registered: bool) {
+        let n = s.cfg.servers.len().max(1);
+        if !was_registered && !s.cfg.bouncer.enabled {
+            s.server_idx = (s.server_idx + 1) % n;
+        }
+        s.failures += 1;
+        let delay = if s.failures as usize > n { 30 } else { 5 };
+        self.server_info(
+            &s.name,
+            &format!("Reconnecting in {delay} seconds… (/network disconnect to stop)"),
+        );
+        let name = s.name.clone();
+        s.reconnect_source = Some(glib::timeout_add_seconds_local_once(delay, move || {
+            let Some(a) = current() else { return };
+            let mut sessions = a.sessions.borrow_mut();
+            if let Some(s) = sessions.iter_mut().find(|s| s.name == name) {
+                s.reconnect_source = None;
+                if s.want_connected && s.conn.is_none() {
+                    a.start_connect(s);
                 }
-            }));
+            }
+        }));
+    }
+
+    /// Ask whether to trust a server certificate that was refused, then reconnect.
+    fn show_cert_dialog(&self, net: &str, host: &str, port: u16, r: CertRejection) {
+        let window = gtk::Window::builder()
+            .title("Untrusted Certificate")
+            .transient_for(&self.window)
+            .modal(true)
+            .destroy_with_parent(true)
+            .default_width(760)
+            .default_height(560)
+            .build();
+        let header = gtk::HeaderBar::new();
+        header.set_show_title_buttons(false);
+        let reject = gtk::Button::with_mnemonic("_Don't Trust");
+        let accept = gtk::Button::with_mnemonic("_Trust This Certificate");
+        accept.add_css_class("destructive-action");
+        header.pack_start(&reject);
+        header.pack_end(&accept);
+        window.set_titlebar(Some(&header));
+
+        let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        body.set_margin_top(12);
+        body.set_margin_bottom(12);
+        body.set_margin_start(12);
+        body.set_margin_end(12);
+        let para = |text: &str| {
+            gtk::Label::builder()
+                .label(text)
+                .xalign(0.0)
+                .wrap(true)
+                .max_width_chars(80)
+                .selectable(true)
+                .build()
+        };
+        let heading = para(&format!(
+            "The certificate of {} ({net}) is not trusted: {}.",
+            crate::config::describe_addr(host, port, false),
+            r.reason
+        ));
+        heading.add_css_class("heading");
+        body.append(&heading);
+        body.append(&para(&format!(
+            "Trust it only if you are sure it is the server's real certificate, for example because its \
+             fingerprint matches one published by the network's operators. An impostor intercepting the \
+             connection could present a certificate like this one to read your messages and passwords. \
+             If you trust it, IrcGoo will accept this exact certificate for {net} from now on."
+        )));
+
+        let mut text = String::new();
+        for (i, der) in r.chain.iter().enumerate() {
+            if r.chain.len() > 1 {
+                text.push_str(&if i == 0 {
+                    "Server certificate\n\n".to_string()
+                } else {
+                    format!("\nIntermediate certificate {i} sent by the server\n\n")
+                });
+            }
+            text.push_str(&crate::x509::describe(der));
+        }
+        let view = gtk::TextView::builder()
+            .editable(false)
+            .cursor_visible(false)
+            .monospace(true)
+            .wrap_mode(gtk::WrapMode::None)
+            .top_margin(6)
+            .bottom_margin(6)
+            .left_margin(6)
+            .right_margin(6)
+            .build();
+        view.buffer().set_text(&text);
+        body.append(
+            &gtk::ScrolledWindow::builder()
+                .has_frame(true)
+                .vexpand(true)
+                .hexpand(true)
+                .child(&view)
+                .build(),
+        );
+        window.set_child(Some(&body));
+        window.set_default_widget(Some(&reject));
+        reject.grab_focus();
+
+        // Closing the window counts as not trusting the certificate.
+        let decided = Rc::new(Cell::new(false));
+        let finish = {
+            let net = net.to_string();
+            let decided = decided.clone();
+            let leaf = r.chain.first().cloned().unwrap_or_default();
+            move |trust: bool| {
+                if decided.replace(true) {
+                    return;
+                }
+                if let Some(a) = current() {
+                    a.cert_decided(&net, &leaf, trust);
+                }
+            }
+        };
+        let finish = Rc::new(finish);
+        let (f, w) = (finish.clone(), window.clone());
+        accept.connect_clicked(move |_| {
+            f(true);
+            w.close();
+        });
+        let w = window.clone();
+        reject.connect_clicked(move |_| w.close());
+        window.connect_close_request(move |_| {
+            finish(false);
+            glib::Propagation::Proceed
+        });
+        window.present();
+    }
+
+    fn cert_decided(&self, net: &str, leaf: &[u8], trust: bool) {
+        let mut save_error = None;
+        if trust && !leaf.is_empty() {
+            let b64 = glib::base64_encode(leaf).to_string();
+            let res = self.update_config(|c| {
+                if let Some(n) = c.networks.iter_mut().find(|n| n.name.eq_ignore_ascii_case(net))
+                    && !n.accepted_certs.contains(&b64)
+                {
+                    n.accepted_certs.push(b64.clone());
+                }
+            });
+            save_error = res.err();
+            if let Some(nw) = self.networks_window.borrow().as_ref() {
+                nw.add_accepted_cert(net, &b64);
+            }
+        }
+        let mut sessions = self.sessions.borrow_mut();
+        let Some(s) = sessions.iter_mut().find(|s| s.name.eq_ignore_ascii_case(net)) else {
+            return;
+        };
+        s.cert_dialog_open = false;
+        if let Some(e) = save_error {
+            self.server_error(&s.name, &format!("Cannot save the configuration: {e}"));
+        }
+        if trust {
+            self.server_info(&s.name, "The server's certificate is now trusted for this network.");
+        } else {
+            s.rejected_certs.insert(leaf.to_vec());
+            self.server_info(&s.name, "The server's certificate was not trusted.");
+        }
+        if !s.want_connected || s.conn.is_some() || self.quitting.get() {
+            return;
+        }
+        if trust {
+            s.failures = 0;
+            self.start_connect(s);
+        } else {
+            self.schedule_reconnect(s, false);
         }
     }
 
@@ -2363,6 +2556,11 @@ impl App {
             NetEvent::Line(line) => {
                 if let Some(m) = Message::parse(&line) {
                     self.handle_message(s, &m);
+                }
+            }
+            NetEvent::CertRejected(r) => {
+                if !r.chain.first().is_some_and(|c| s.rejected_certs.contains(c)) {
+                    s.cert_pending = Some(r);
                 }
             }
             NetEvent::Disconnected(reason) => self.on_disconnected(s, &reason),

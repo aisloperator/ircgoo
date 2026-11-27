@@ -462,6 +462,8 @@ pub struct NetworksWindow {
     use_system_cas: gtk::CheckButton,
     certs_list: gtk::ListBox,
     certs: RefCell<Vec<String>>,
+    accepted_list: gtk::ListBox,
+    accepted: RefCell<Vec<String>>,
     // Bouncer
     b_enabled: gtk::CheckButton,
     b_host: gtk::Entry,
@@ -629,6 +631,28 @@ impl NetworksWindow {
             2,
             1,
         );
+        let accepted_list = gtk::ListBox::new();
+        let a_remove = gtk::Button::with_label("Remove");
+        tg.attach(
+            &gtk::Label::builder()
+                .label("Server certificates you chose to trust when connecting:")
+                .xalign(0.0)
+                .margin_top(6)
+                .build(),
+            0,
+            4,
+            2,
+            1,
+        );
+        tg.attach(&framed_list(&accepted_list, 80), 0, 5, 1, 1);
+        tg.attach(&button_column(&[&a_remove]), 1, 5, 1, 1);
+        tg.attach(
+            &hint("Each is trusted exactly. Hover one to see its details."),
+            0,
+            6,
+            2,
+            1,
+        );
 
         // Bouncer page
         let bg = grid();
@@ -695,6 +719,8 @@ impl NetworksWindow {
             use_system_cas,
             certs_list,
             certs: RefCell::new(Vec::new()),
+            accepted_list,
+            accepted: RefCell::new(Vec::new()),
             b_enabled,
             b_host,
             b_port,
@@ -864,6 +890,15 @@ impl NetworksWindow {
         });
 
         let w = Rc::downgrade(&nw);
+        a_remove.connect_clicked(move |_| {
+            let Some(nw) = w.upgrade() else { return };
+            if let Some(i) = nw.accepted_list.selected_row().map(|r| r.index() as usize) {
+                nw.accepted.borrow_mut().remove(i);
+                nw.refresh_accepted();
+            }
+        });
+
+        let w = Rc::downgrade(&nw);
         save.connect_clicked(move |_| {
             if let Some(nw) = w.upgrade() {
                 nw.save();
@@ -908,6 +943,33 @@ impl NetworksWindow {
         }
     }
 
+    fn refresh_accepted(&self) {
+        clear_list(&self.accepted_list);
+        for c in self.accepted.borrow().iter() {
+            let der = gtk::glib::base64_decode(c);
+            let row = list_row(&crate::x509::summary(&der));
+            row.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            let details = crate::x509::describe(&der);
+            let details = details.split("\n\n").next().unwrap_or_default();
+            row.set_tooltip_markup(Some(&format!("<tt>{}</tt>", gtk::glib::markup_escape_text(details))));
+            self.accepted_list.append(&row);
+        }
+    }
+
+    /// A certificate the user just accepted when connecting, so that saving this window
+    /// keeps it.
+    pub fn add_accepted_cert(&self, net: &str, b64: &str) {
+        self.store_current();
+        let mut nets = self.nets.borrow_mut();
+        if let Some(n) = nets.iter_mut().find(|n| n.name.eq_ignore_ascii_case(net))
+            && !n.accepted_certs.iter().any(|c| c == b64)
+        {
+            n.accepted_certs.push(b64.to_string());
+        }
+        drop(nets);
+        self.load_current();
+    }
+
     fn load_current(&self) {
         self.loading.set(true);
         let net = self.current.get().and_then(|i| self.nets.borrow().get(i).cloned());
@@ -927,6 +989,8 @@ impl NetworksWindow {
         self.use_system_cas.set_active(n.use_system_cas);
         *self.certs.borrow_mut() = n.trusted_certs.clone();
         self.refresh_certs();
+        *self.accepted.borrow_mut() = n.accepted_certs.clone();
+        self.refresh_accepted();
         let b = &n.bouncer;
         self.b_enabled.set_active(b.enabled);
         self.b_grid.set_sensitive(b.enabled);
@@ -960,6 +1024,7 @@ impl NetworksWindow {
         n.sasl = self.sasl.get();
         n.use_system_cas = self.use_system_cas.is_active();
         n.trusted_certs = self.certs.borrow().clone();
+        n.accepted_certs = self.accepted.borrow().clone();
         n.bouncer = Bouncer {
             enabled: self.b_enabled.is_active(),
             host: self.b_host.text().trim().to_string(),

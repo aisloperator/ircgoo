@@ -16,3 +16,6 @@ gtk = { version = "0.11.5", package = "gtk4", features = ["v4_8"] }
 # Pure-Rust TLS with the ring backend (needs only a C compiler, no OpenSSL headers).
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-native-certs = "0.8.5"
+# Already used by rustls; named here only to recognize its errors (such as a self-signed
+# certificate that is marked as a CA).
+webpki = { package = "rustls-webpki", version = "0.103.16", default-features = false }

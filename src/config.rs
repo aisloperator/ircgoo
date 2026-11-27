@@ -128,6 +128,8 @@ pub struct Network {
     pub use_system_cas: bool,
     /// PEM files with additional trusted CA or server certificates.
     pub trusted_certs: Vec<String>,
+    /// Server certificates (base64 DER) that the user chose to trust when connecting.
+    pub accepted_certs: Vec<String>,
     pub bouncer: Bouncer,
     pub use_proxy: bool,
     pub autojoin: Vec<String>,
@@ -145,6 +147,7 @@ impl Default for Network {
             sasl: Sasl::default(),
             use_system_cas: true,
             trusted_certs: Vec::new(),
+            accepted_certs: Vec::new(),
             bouncer: Bouncer::default(),
             use_proxy: true,
             autojoin: Vec::new(),
@@ -282,6 +285,7 @@ impl Config {
                 sasl: read_sasl(&kf, &ng),
                 use_system_cas: gb(&kf, &ng, "use_system_cas", true),
                 trusted_certs: glist(&kf, &ng, "trusted_certs"),
+                accepted_certs: glist(&kf, &ng, "accepted_certs"),
                 bouncer: Bouncer {
                     enabled: gb(&kf, &ng, "bouncer_enabled", false),
                     host: gs(&kf, &ng, "bouncer_host"),
@@ -345,6 +349,7 @@ impl Config {
             write_sasl(&kf, &ng, &n.sasl);
             kf.set_boolean(&ng, "use_system_cas", n.use_system_cas);
             kf.set_string(&ng, "trusted_certs", &n.trusted_certs.join("\n"));
+            kf.set_string(&ng, "accepted_certs", &n.accepted_certs.join("\n"));
             kf.set_boolean(&ng, "use_proxy", n.use_proxy);
             kf.set_string(&ng, "autojoin", &n.autojoin.join("\n"));
             let b = &n.bouncer;
@@ -492,6 +497,7 @@ mod tests {
                 ..Sasl::default()
             },
             trusted_certs: vec!["/a/b.pem".into(), "/c;d.pem".into()],
+            accepted_certs: vec!["MIIBaw==".into(), "MIIBbA==".into()],
             bouncer: Bouncer {
                 enabled: true,
                 host: "znc.local".into(),

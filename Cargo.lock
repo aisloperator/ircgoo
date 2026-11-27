@@ -458,6 +458,7 @@ dependencies = [
  "gtk4",
  "rustls",
  "rustls-native-certs",
+ "rustls-webpki",
 ]
 
 [[package]]
