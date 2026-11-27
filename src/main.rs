@@ -3,6 +3,7 @@
 mod app;
 mod config;
 mod irc;
+mod legacy_tls;
 mod net;
 mod prefs;
 mod socks;

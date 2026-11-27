@@ -464,6 +464,8 @@ pub struct NetworksWindow {
     certs: RefCell<Vec<String>>,
     accepted_list: gtk::ListBox,
     accepted: RefCell<Vec<String>>,
+    legacy_list: gtk::ListBox,
+    legacy: RefCell<Vec<String>>,
     // Bouncer
     b_enabled: gtk::CheckButton,
     b_host: gtk::Entry,
@@ -653,6 +655,28 @@ impl NetworksWindow {
             2,
             1,
         );
+        let legacy_list = gtk::ListBox::new();
+        let l_remove = gtk::Button::with_label("Remove");
+        tg.attach(
+            &gtk::Label::builder()
+                .label("Servers allowed to use legacy TLS (GnuTLS):")
+                .xalign(0.0)
+                .margin_top(6)
+                .build(),
+            0,
+            7,
+            2,
+            1,
+        );
+        tg.attach(&framed_list(&legacy_list, 60), 0, 8, 1, 1);
+        tg.attach(&button_column(&[&l_remove]), 1, 8, 1, 1);
+        tg.attach(
+            &hint("When one of these refuses IrcGoo's usual TLS, IrcGoo retries with GnuTLS, which supports older TLS without forward secrecy. IrcGoo asks before adding one."),
+            0,
+            9,
+            2,
+            1,
+        );
 
         // Bouncer page
         let bg = grid();
@@ -721,6 +745,8 @@ impl NetworksWindow {
             certs: RefCell::new(Vec::new()),
             accepted_list,
             accepted: RefCell::new(Vec::new()),
+            legacy_list,
+            legacy: RefCell::new(Vec::new()),
             b_enabled,
             b_host,
             b_port,
@@ -899,6 +925,15 @@ impl NetworksWindow {
         });
 
         let w = Rc::downgrade(&nw);
+        l_remove.connect_clicked(move |_| {
+            let Some(nw) = w.upgrade() else { return };
+            if let Some(i) = nw.legacy_list.selected_row().map(|r| r.index() as usize) {
+                nw.legacy.borrow_mut().remove(i);
+                nw.refresh_legacy();
+            }
+        });
+
+        let w = Rc::downgrade(&nw);
         save.connect_clicked(move |_| {
             if let Some(nw) = w.upgrade() {
                 nw.save();
@@ -956,18 +991,26 @@ impl NetworksWindow {
         }
     }
 
-    /// A certificate the user just accepted when connecting, so that saving this window
-    /// keeps it.
-    pub fn add_accepted_cert(&self, net: &str, b64: &str) {
+    /// Something the user just allowed when connecting (an accepted certificate, a server
+    /// allowed to use legacy TLS), added to this window's copy too so that saving keeps it.
+    pub fn remember(&self, net: &str, value: &str, list: fn(&mut Network) -> &mut Vec<String>) {
         self.store_current();
         let mut nets = self.nets.borrow_mut();
-        if let Some(n) = nets.iter_mut().find(|n| n.name.eq_ignore_ascii_case(net))
-            && !n.accepted_certs.iter().any(|c| c == b64)
-        {
-            n.accepted_certs.push(b64.to_string());
+        if let Some(n) = nets.iter_mut().find(|n| n.name.eq_ignore_ascii_case(net)) {
+            let l = list(n);
+            if !l.iter().any(|x| x == value) {
+                l.push(value.to_string());
+            }
         }
         drop(nets);
         self.load_current();
+    }
+
+    fn refresh_legacy(&self) {
+        clear_list(&self.legacy_list);
+        for c in self.legacy.borrow().iter() {
+            self.legacy_list.append(&list_row(c));
+        }
     }
 
     fn load_current(&self) {
@@ -991,6 +1034,8 @@ impl NetworksWindow {
         self.refresh_certs();
         *self.accepted.borrow_mut() = n.accepted_certs.clone();
         self.refresh_accepted();
+        *self.legacy.borrow_mut() = n.legacy_tls.clone();
+        self.refresh_legacy();
         let b = &n.bouncer;
         self.b_enabled.set_active(b.enabled);
         self.b_grid.set_sensitive(b.enabled);
@@ -1025,6 +1070,7 @@ impl NetworksWindow {
         n.use_system_cas = self.use_system_cas.is_active();
         n.trusted_certs = self.certs.borrow().clone();
         n.accepted_certs = self.accepted.borrow().clone();
+        n.legacy_tls = self.legacy.borrow().clone();
         n.bouncer = Bouncer {
             enabled: self.b_enabled.is_active(),
             host: self.b_host.text().trim().to_string(),

@@ -2,6 +2,7 @@
 //! reports events to the GTK main loop through a channel.
 
 use crate::config::{Proxy, describe_addr};
+use crate::legacy_tls::{self, LegacyStream};
 use crate::socks;
 use crate::tls::{self, CertRejection, TlsSettings};
 use gtk::glib;
@@ -24,6 +25,9 @@ pub enum NetEvent {
     /// The server's certificate was refused for a reason the user may override. A
     /// `Disconnected` follows.
     CertRejected(CertRejection),
+    /// The server refused every TLS handshake rustls offers, and legacy TLS has not been
+    /// allowed for it. A `Disconnected` follows.
+    LegacyTlsMightHelp,
     Disconnected(String),
 }
 
@@ -67,6 +71,8 @@ pub struct ConnectParams {
     pub tls: bool,
     pub proxy: Option<Proxy>,
     pub tls_settings: TlsSettings,
+    /// The user allowed legacy TLS (GnuTLS) for this server, as a fallback.
+    pub legacy_tls: bool,
 }
 
 enum Cmd {
@@ -108,6 +114,7 @@ pub fn spawn(id: u64, params: ConnectParams, sink: EventSink) -> Connection {
 enum Stream {
     Plain(TcpStream),
     Tls(Box<StreamOwned<ClientConnection, TcpStream>>),
+    Legacy(Box<LegacyStream>),
 }
 
 impl Read for Stream {
@@ -115,6 +122,7 @@ impl Read for Stream {
         match self {
             Stream::Plain(s) => s.read(buf),
             Stream::Tls(s) => s.read(buf),
+            Stream::Legacy(s) => s.read(buf),
         }
     }
 }
@@ -124,12 +132,14 @@ impl Write for Stream {
         match self {
             Stream::Plain(s) => s.write(buf),
             Stream::Tls(s) => s.write(buf),
+            Stream::Legacy(s) => s.write(buf),
         }
     }
     fn flush(&mut self) -> io::Result<()> {
         match self {
             Stream::Plain(s) => s.flush(),
             Stream::Tls(s) => s.flush(),
+            Stream::Legacy(s) => s.flush(),
         }
     }
 }
@@ -145,6 +155,7 @@ impl Stream {
                 let _ = s.flush();
                 let _ = s.sock.shutdown(Shutdown::Both);
             }
+            Stream::Legacy(s) => s.shutdown(),
         }
     }
 }
@@ -165,15 +176,23 @@ fn run(id: u64, p: &ConnectParams, sink: &EventSink, rx: &mpsc::Receiver<Cmd>) -
     };
     sink.send(id, NetEvent::Status(format!("Connecting to {addr}{via}…")));
 
-    let sock = match &p.proxy {
-        Some(px) => socks::connect(px, &p.host, p.port, CONNECT_TIMEOUT),
-        None => socks::tcp_connect(&p.host, p.port, CONNECT_TIMEOUT),
+    let connect = || {
+        let sock = match &p.proxy {
+            Some(px) => socks::connect(px, &p.host, p.port, CONNECT_TIMEOUT),
+            None => socks::tcp_connect(&p.host, p.port, CONNECT_TIMEOUT),
+        };
+        match sock {
+            Ok(s) => {
+                let _ = s.set_nodelay(true);
+                Ok(s)
+            }
+            Err(e) => Err(format!("Connection failed: {e}")),
+        }
     };
-    let sock = match sock {
+    let sock = match connect() {
         Ok(s) => s,
-        Err(e) => return format!("Connection failed: {e}"),
+        Err(e) => return e,
     };
-    let _ = sock.set_nodelay(true);
 
     let mut stream = if p.tls {
         let (config, rejection) = match tls::client_config(&p.tls_settings) {
@@ -190,27 +209,74 @@ fn run(id: u64, p: &ConnectParams, sink: &EventSink, rx: &mpsc::Receiver<Cmd>) -
         };
         let mut sock = sock;
         let _ = sock.set_read_timeout(Some(CONNECT_TIMEOUT));
+        let mut failed = None;
         while conn.is_handshaking() {
             if let Err(e) = conn.complete_io(&mut sock) {
-                if let Some(r) = rejection.lock().unwrap().take() {
-                    sink.send(id, NetEvent::CertRejected(r));
-                }
-                return format!("TLS handshake failed: {e}");
+                failed = Some(e);
+                break;
             }
         }
-        let version = conn.protocol_version().map(|v| format!("{v:?}")).unwrap_or_default();
-        let suite = conn
-            .negotiated_cipher_suite()
-            .map(|s| format!("{:?}", s.suite()))
-            .unwrap_or_default();
-        sink.send(id, NetEvent::Status(format!("TLS established ({version}, {suite})")));
-        Stream::Tls(Box::new(StreamOwned::new(conn, sock)))
+        match failed {
+            None => {
+                let version = conn.protocol_version().map(|v| format!("{v:?}")).unwrap_or_default();
+                let suite = conn
+                    .negotiated_cipher_suite()
+                    .map(|s| format!("{:?}", s.suite()))
+                    .unwrap_or_default();
+                sink.send(id, NetEvent::Status(format!("TLS established ({version}, {suite})")));
+                Stream::Tls(Box::new(StreamOwned::new(conn, sock)))
+            }
+            Some(e) => {
+                if let Some(r) = rejection.lock().unwrap().take() {
+                    sink.send(id, NetEvent::CertRejected(r));
+                    return format!("TLS handshake failed: {e}");
+                }
+                if !tls::legacy_might_help(&e) {
+                    return format!("TLS handshake failed: {e}");
+                }
+                if !p.legacy_tls {
+                    sink.send(id, NetEvent::LegacyTlsMightHelp);
+                    return format!(
+                        "TLS handshake failed: {e}. The server may accept only older TLS that IrcGoo's \
+                         usual TLS library does not support."
+                    );
+                }
+                drop(sock);
+                sink.send(
+                    id,
+                    NetEvent::Status(format!(
+                        "TLS handshake failed: {e}. Trying legacy TLS (GnuTLS), as allowed for this server…"
+                    )),
+                );
+                let sock = match connect() {
+                    Ok(s) => s,
+                    Err(e) => return e,
+                };
+                match legacy_tls::connect(sock, &p.host, p.port, &p.tls_settings, CONNECT_TIMEOUT, POLL_INTERVAL) {
+                    Ok(ls) => {
+                        sink.send(
+                            id,
+                            NetEvent::Status(format!("Legacy TLS established ({})", ls.describe())),
+                        );
+                        Stream::Legacy(Box::new(ls))
+                    }
+                    Err(f) => {
+                        if let Some(r) = f.rejection {
+                            sink.send(id, NetEvent::CertRejected(r));
+                        }
+                        return f.message;
+                    }
+                }
+            }
+        }
     } else {
         Stream::Plain(sock)
     };
     let set_timeout = match &stream {
         Stream::Plain(s) => s.set_read_timeout(Some(POLL_INTERVAL)),
         Stream::Tls(s) => s.sock.set_read_timeout(Some(POLL_INTERVAL)),
+        // Waits at most POLL_INTERVAL in each read by itself.
+        Stream::Legacy(_) => Ok(()),
     };
     if let Err(e) = set_timeout {
         return format!("Socket error: {e}");

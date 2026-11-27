@@ -176,8 +176,12 @@ struct Session {
     endpoint: Option<(String, u16, bool)>,
     /// A refused server certificate to ask the user about when the connection ends.
     cert_pending: Option<CertRejection>,
-    /// The user is being asked whether to trust a certificate; reconnecting waits for it.
-    cert_dialog_open: bool,
+    /// The connection ended in a way that legacy TLS might avoid; ask about it.
+    legacy_pending: bool,
+    /// The user is being asked about a certificate or legacy TLS; reconnecting waits.
+    prompt_open: bool,
+    /// Servers ("host:port") for which the user declined legacy TLS while IrcGoo runs.
+    declined_legacy: HashSet<String>,
     /// Server certificates (DER) that the user declined to trust while IrcGoo runs.
     rejected_certs: HashSet<Vec<u8>>,
 }
@@ -214,7 +218,9 @@ impl Session {
             last_ctcp_reply: HashMap::new(),
             endpoint: None,
             cert_pending: None,
-            cert_dialog_open: false,
+            legacy_pending: false,
+            prompt_open: false,
+            declined_legacy: HashSet::new(),
             rejected_certs: HashSet::new(),
         }
     }
@@ -2286,6 +2292,10 @@ impl App {
             .filter(|x| x.mech == SaslMech::External && !x.cert_file.is_empty())
             .map(|x| PathBuf::from(&x.cert_file));
         let proxy = (cfg.proxy.enabled && s.cfg.use_proxy).then(|| cfg.proxy.clone());
+        let legacy_tls = tls
+            && s.cfg
+                .legacy_tls
+                .contains(&crate::config::describe_addr(&host, port, false));
         let params = ConnectParams {
             host,
             port,
@@ -2303,9 +2313,11 @@ impl App {
                     .filter(|d| !d.is_empty())
                     .collect(),
             },
+            legacy_tls,
         };
         s.endpoint = Some((params.host.clone(), params.port, params.tls));
         s.cert_pending = None;
+        s.legacy_pending = false;
         let id = self.new_id();
         s.conn_id = id;
         s.sasl_current = sasl;
@@ -2336,21 +2348,26 @@ impl App {
             self.error(&t, reason);
         }
         let cert = s.cert_pending.take();
+        let legacy = std::mem::take(&mut s.legacy_pending);
         if s.want_connected && !self.quitting.get() {
-            if let Some(r) = cert
-                && !s.cert_dialog_open
-            {
-                s.cert_dialog_open = true;
+            if (cert.is_some() || legacy) && !s.prompt_open {
+                s.prompt_open = true;
                 self.server_info(
                     &s.name,
-                    "Waiting for you to decide whether to trust the server's certificate…",
+                    if cert.is_some() {
+                        "Waiting for you to decide whether to trust the server's certificate…"
+                    } else {
+                        "Waiting for you to decide whether to try legacy TLS…"
+                    },
                 );
                 let (host, port) = s.endpoint.clone().map(|(h, p, _)| (h, p)).unwrap_or_default();
                 let name = s.name.clone();
                 // Not while the sessions are borrowed.
                 glib::idle_add_local_once(move || {
-                    if let Some(a) = current() {
-                        a.show_cert_dialog(&name, &host, port, r);
+                    let Some(a) = current() else { return };
+                    match cert {
+                        Some(r) => a.show_cert_dialog(&name, &host, port, r),
+                        None => a.show_legacy_dialog(&name, &host, port),
                     }
                 });
                 return;
@@ -2384,23 +2401,34 @@ impl App {
         }));
     }
 
-    /// Ask whether to trust a server certificate that was refused, then reconnect.
-    fn show_cert_dialog(&self, net: &str, host: &str, port: u16, r: CertRejection) {
+    /// A modal question with a "no" button (the default; closing the window also means no)
+    /// and a "yes" button. `decide` is called once with the answer.
+    fn ask(&self, q: Question, decide: impl Fn(bool) + 'static) {
+        let Question {
+            title,
+            no_label,
+            yes_label,
+            heading,
+            advice,
+            details,
+        } = q;
         let window = gtk::Window::builder()
-            .title("Untrusted Certificate")
+            .title(title)
             .transient_for(&self.window)
             .modal(true)
             .destroy_with_parent(true)
             .default_width(760)
-            .default_height(560)
             .build();
+        if details.is_some() {
+            window.set_default_height(560);
+        }
         let header = gtk::HeaderBar::new();
         header.set_show_title_buttons(false);
-        let reject = gtk::Button::with_mnemonic("_Don't Trust");
-        let accept = gtk::Button::with_mnemonic("_Trust This Certificate");
-        accept.add_css_class("destructive-action");
-        header.pack_start(&reject);
-        header.pack_end(&accept);
+        let no = gtk::Button::with_mnemonic(no_label);
+        let yes = gtk::Button::with_mnemonic(yes_label);
+        yes.add_css_class("destructive-action");
+        header.pack_start(&no);
+        header.pack_end(&yes);
         window.set_titlebar(Some(&header));
 
         let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
@@ -2417,20 +2445,57 @@ impl App {
                 .selectable(true)
                 .build()
         };
-        let heading = para(&format!(
-            "The certificate of {} ({net}) is not trusted: {}.",
-            crate::config::describe_addr(host, port, false),
-            r.reason
-        ));
+        let heading = para(&heading);
         heading.add_css_class("heading");
         body.append(&heading);
-        body.append(&para(&format!(
-            "Trust it only if you are sure it is the server's real certificate, for example because its \
-             fingerprint matches one published by the network's operators. An impostor intercepting the \
-             connection could present a certificate like this one to read your messages and passwords. \
-             If you trust it, IrcGoo will accept this exact certificate for {net} from now on."
-        )));
+        body.append(&para(&advice));
+        if let Some(text) = details.as_deref() {
+            let view = gtk::TextView::builder()
+                .editable(false)
+                .cursor_visible(false)
+                .monospace(true)
+                .wrap_mode(gtk::WrapMode::None)
+                .top_margin(6)
+                .bottom_margin(6)
+                .left_margin(6)
+                .right_margin(6)
+                .build();
+            view.buffer().set_text(text);
+            body.append(
+                &gtk::ScrolledWindow::builder()
+                    .has_frame(true)
+                    .vexpand(true)
+                    .hexpand(true)
+                    .child(&view)
+                    .build(),
+            );
+        }
+        window.set_child(Some(&body));
+        window.set_default_widget(Some(&no));
+        no.grab_focus();
 
+        let decided = Rc::new(Cell::new(false));
+        let decide = Rc::new(move |yes: bool| {
+            if !decided.replace(true) {
+                decide(yes);
+            }
+        });
+        let (d, w) = (decide.clone(), window.clone());
+        yes.connect_clicked(move |_| {
+            d(true);
+            w.close();
+        });
+        let w = window.clone();
+        no.connect_clicked(move |_| w.close());
+        window.connect_close_request(move |_| {
+            decide(false);
+            glib::Propagation::Proceed
+        });
+        window.present();
+    }
+
+    /// Ask whether to trust a server certificate that was refused, then reconnect.
+    fn show_cert_dialog(&self, net: &str, host: &str, port: u16, r: CertRejection) {
         let mut text = String::new();
         for (i, der) in r.chain.iter().enumerate() {
             if r.chain.len() > 1 {
@@ -2442,97 +2507,143 @@ impl App {
             }
             text.push_str(&crate::x509::describe(der));
         }
-        let view = gtk::TextView::builder()
-            .editable(false)
-            .cursor_visible(false)
-            .monospace(true)
-            .wrap_mode(gtk::WrapMode::None)
-            .top_margin(6)
-            .bottom_margin(6)
-            .left_margin(6)
-            .right_margin(6)
-            .build();
-        view.buffer().set_text(&text);
-        body.append(
-            &gtk::ScrolledWindow::builder()
-                .has_frame(true)
-                .vexpand(true)
-                .hexpand(true)
-                .child(&view)
-                .build(),
-        );
-        window.set_child(Some(&body));
-        window.set_default_widget(Some(&reject));
-        reject.grab_focus();
-
-        // Closing the window counts as not trusting the certificate.
-        let decided = Rc::new(Cell::new(false));
-        let finish = {
-            let net = net.to_string();
-            let decided = decided.clone();
-            let leaf = r.chain.first().cloned().unwrap_or_default();
-            move |trust: bool| {
-                if decided.replace(true) {
-                    return;
-                }
+        let leaf = r.chain.first().cloned().unwrap_or_default();
+        let net2 = net.to_string();
+        self.ask(
+            Question {
+                title: "Untrusted Certificate",
+                no_label: "_Don't Trust",
+                yes_label: "_Trust This Certificate",
+                heading: format!(
+                    "The certificate of {} ({net}) is not trusted: {}.",
+                    crate::config::describe_addr(host, port, false),
+                    r.reason
+                ),
+                advice: format!(
+                    "Trust it only if you are sure it is the server's real certificate, for example because its \
+                     fingerprint matches one published by the network's operators. An impostor intercepting the \
+                     connection could present a certificate like this one to read your messages and passwords. \
+                     If you trust it, IrcGoo will accept this exact certificate for {net} from now on."
+                ),
+                details: Some(text),
+            },
+            move |trust| {
                 if let Some(a) = current() {
-                    a.cert_decided(&net, &leaf, trust);
+                    a.cert_decided(&net2, &leaf, trust);
                 }
-            }
-        };
-        let finish = Rc::new(finish);
-        let (f, w) = (finish.clone(), window.clone());
-        accept.connect_clicked(move |_| {
-            f(true);
-            w.close();
-        });
-        let w = window.clone();
-        reject.connect_clicked(move |_| w.close());
-        window.connect_close_request(move |_| {
-            finish(false);
-            glib::Propagation::Proceed
-        });
-        window.present();
+            },
+        );
     }
 
-    fn cert_decided(&self, net: &str, leaf: &[u8], trust: bool) {
-        let mut save_error = None;
-        if trust && !leaf.is_empty() {
-            let b64 = glib::base64_encode(leaf).to_string();
-            let res = self.update_config(|c| {
-                if let Some(n) = c.networks.iter_mut().find(|n| n.name.eq_ignore_ascii_case(net))
-                    && !n.accepted_certs.contains(&b64)
-                {
-                    n.accepted_certs.push(b64.clone());
+    /// Ask whether to retry a server with legacy TLS (GnuTLS), then reconnect.
+    fn show_legacy_dialog(&self, net: &str, host: &str, port: u16) {
+        let addr = crate::config::describe_addr(host, port, false);
+        let (net2, addr2) = (net.to_string(), addr.clone());
+        self.ask(
+            Question {
+                title: "Legacy TLS",
+                no_label: "_Don't Use Legacy TLS",
+                yes_label: "_Use Legacy TLS for This Server",
+                heading: format!("{addr} ({net}) refused every secure connection method IrcGoo normally uses."),
+                advice: format!(
+                    "The server may accept only older TLS, such as TLS 1.2 with RSA key exchange, which has no \
+                     forward secrecy: anyone who later obtains the server's private key can decrypt recorded \
+                     traffic. IrcGoo's usual TLS library (rustls) does not support it. IrcGoo can retry with \
+                     GnuTLS, the TLS library that GTK uses, whenever the usual library fails with this server.\n\n\
+                     Certificates are checked the same way either way. If you allow it, IrcGoo remembers it for \
+                     {addr} on {net}; you can remove it in the Networks window."
+                ),
+                details: None,
+            },
+            move |yes| {
+                if let Some(a) = current() {
+                    a.legacy_decided(&net2, &addr2, yes);
                 }
-            });
-            save_error = res.err();
-            if let Some(nw) = self.networks_window.borrow().as_ref() {
-                nw.add_accepted_cert(net, &b64);
-            }
-        }
+            },
+        );
+    }
+
+    /// After a question: report a save error, then reconnect now (`retry`) or after the
+    /// usual delay.
+    fn after_prompt(&self, net: &str, save_error: Option<String>, message: &str, retry: bool) {
         let mut sessions = self.sessions.borrow_mut();
         let Some(s) = sessions.iter_mut().find(|s| s.name.eq_ignore_ascii_case(net)) else {
             return;
         };
-        s.cert_dialog_open = false;
+        s.prompt_open = false;
         if let Some(e) = save_error {
             self.server_error(&s.name, &format!("Cannot save the configuration: {e}"));
         }
-        if trust {
-            self.server_info(&s.name, "The server's certificate is now trusted for this network.");
-        } else {
-            s.rejected_certs.insert(leaf.to_vec());
-            self.server_info(&s.name, "The server's certificate was not trusted.");
-        }
+        self.server_info(&s.name, message);
         if !s.want_connected || s.conn.is_some() || self.quitting.get() {
             return;
         }
-        if trust {
+        if retry {
             s.failures = 0;
             self.start_connect(s);
         } else {
             self.schedule_reconnect(s, false);
+        }
+    }
+
+    /// Add `value` to a list in the network's configuration, unless it is there already.
+    fn remember(&self, net: &str, value: &str, list: fn(&mut Network) -> &mut Vec<String>) -> Option<String> {
+        let res = self.update_config(|c| {
+            if let Some(n) = c.networks.iter_mut().find(|n| n.name.eq_ignore_ascii_case(net)) {
+                let l = list(n);
+                if !l.iter().any(|x| x == value) {
+                    l.push(value.to_string());
+                }
+            }
+        });
+        if let Some(nw) = self.networks_window.borrow().as_ref() {
+            nw.remember(net, value, list);
+        }
+        res.err()
+    }
+
+    fn cert_decided(&self, net: &str, leaf: &[u8], trust: bool) {
+        if trust && !leaf.is_empty() {
+            let b64 = glib::base64_encode(leaf).to_string();
+            let err = self.remember(net, &b64, |n| &mut n.accepted_certs);
+            self.after_prompt(
+                net,
+                err,
+                "The server's certificate is now trusted for this network.",
+                true,
+            );
+        } else {
+            if let Some(s) = self
+                .sessions
+                .borrow_mut()
+                .iter_mut()
+                .find(|s| s.name.eq_ignore_ascii_case(net))
+            {
+                s.rejected_certs.insert(leaf.to_vec());
+            }
+            self.after_prompt(net, None, "The server's certificate was not trusted.", false);
+        }
+    }
+
+    fn legacy_decided(&self, net: &str, addr: &str, yes: bool) {
+        if yes {
+            let err = self.remember(net, addr, |n| &mut n.legacy_tls);
+            self.after_prompt(
+                net,
+                err,
+                &format!("Legacy TLS (GnuTLS) is now allowed for {addr}."),
+                true,
+            );
+        } else {
+            if let Some(s) = self
+                .sessions
+                .borrow_mut()
+                .iter_mut()
+                .find(|s| s.name.eq_ignore_ascii_case(net))
+            {
+                s.declined_legacy.insert(addr.to_string());
+            }
+            self.after_prompt(net, None, &format!("Legacy TLS was not allowed for {addr}."), false);
         }
     }
 
@@ -2557,6 +2668,14 @@ impl App {
                 if let Some(m) = Message::parse(&line) {
                     self.handle_message(s, &m);
                 }
+            }
+            NetEvent::LegacyTlsMightHelp => {
+                let addr = s
+                    .endpoint
+                    .as_ref()
+                    .map(|(h, p, _)| crate::config::describe_addr(h, *p, false))
+                    .unwrap_or_default();
+                s.legacy_pending = !s.declined_legacy.contains(&addr);
             }
             NetEvent::CertRejected(r) => {
                 if !r.chain.first().is_some_and(|c| s.rejected_certs.contains(c)) {
@@ -3461,4 +3580,15 @@ fn history_move(tab: &Tab, up: bool) {
     };
     tab.entry.set_text(&text);
     tab.entry.set_position(-1);
+}
+
+/// What `App::ask` shows.
+struct Question {
+    title: &'static str,
+    no_label: &'static str,
+    yes_label: &'static str,
+    heading: String,
+    advice: String,
+    /// Monospace text in a scrolled box, such as a certificate.
+    details: Option<String>,
 }

@@ -129,8 +129,7 @@ impl ServerCertVerifier for GooVerifier {
 
 /// The client configuration, and the slot where an overridable rejection of the server's
 /// certificate will be left.
-pub fn client_config(s: &TlsSettings) -> Result<(Arc<ClientConfig>, RejectionSlot), String> {
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
+fn verifier(s: &TlsSettings, provider: &Arc<CryptoProvider>) -> Result<(Arc<GooVerifier>, RejectionSlot), String> {
     let mut roots = RootCertStore::empty();
     if s.use_system_cas {
         let res = rustls_native_certs::load_native_certs();
@@ -164,6 +163,12 @@ pub fn client_config(s: &TlsSettings) -> Result<(Arc<ClientConfig>, RejectionSlo
         provider: provider.clone(),
         rejection: rejection.clone(),
     });
+    Ok((verifier, rejection))
+}
+
+pub fn client_config(s: &TlsSettings) -> Result<(Arc<ClientConfig>, RejectionSlot), String> {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let (verifier, rejection) = verifier(s, &provider)?;
     let builder = ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .map_err(|e| format!("TLS setup failed: {e}"))?
@@ -187,4 +192,37 @@ pub fn client_config(s: &TlsSettings) -> Result<(Arc<ClientConfig>, RejectionSlo
         None => builder.with_no_client_auth(),
     };
     Ok((Arc::new(config), rejection))
+}
+
+/// Check a certificate chain (server's certificate first) the way a rustls connection
+/// would, for connections made by another TLS library. On failure, returns the message
+/// and, when the user may override it, the refusal to ask about.
+pub fn verify_chain(s: &TlsSettings, host: &str, chain: &[Vec<u8>]) -> Result<(), (String, Option<CertRejection>)> {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let (verifier, rejection) = verifier(s, &provider).map_err(|e| (e, None))?;
+    let Some((leaf, rest)) = chain.split_first() else {
+        return Err(("the server sent no certificate".into(), None));
+    };
+    let name = ServerName::try_from(host.trim_matches(['[', ']']).to_string())
+        .map_err(|e| (format!("invalid server name {host}: {e}"), None))?;
+    let leaf = CertificateDer::from(leaf.as_slice());
+    let intermediates: Vec<CertificateDer<'_>> = rest.iter().map(|c| CertificateDer::from(c.as_slice())).collect();
+    match verifier.verify_server_cert(&leaf, &intermediates, &name, &[], UnixTime::now()) {
+        Ok(_) => Ok(()),
+        Err(e) => Err((e.to_string(), rejection.lock().unwrap().take())),
+    }
+}
+
+/// Whether a failed rustls handshake looks like a server that accepts only TLS that rustls
+/// does not implement (such as RSA key exchange), so that legacy TLS might work.
+pub fn legacy_might_help(e: &std::io::Error) -> bool {
+    use rustls::AlertDescription as A;
+    matches!(
+        e.get_ref().and_then(|i| i.downcast_ref::<rustls::Error>()),
+        Some(
+            rustls::Error::AlertReceived(
+                A::HandshakeFailure | A::ProtocolVersion | A::InsufficientSecurity | A::IllegalParameter,
+            ) | rustls::Error::PeerIncompatible(_)
+        )
+    )
 }

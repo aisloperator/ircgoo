@@ -130,6 +130,8 @@ pub struct Network {
     pub trusted_certs: Vec<String>,
     /// Server certificates (base64 DER) that the user chose to trust when connecting.
     pub accepted_certs: Vec<String>,
+    /// Servers ("host:port") for which the user allowed legacy TLS (GnuTLS) as a fallback.
+    pub legacy_tls: Vec<String>,
     pub bouncer: Bouncer,
     pub use_proxy: bool,
     pub autojoin: Vec<String>,
@@ -148,6 +150,7 @@ impl Default for Network {
             use_system_cas: true,
             trusted_certs: Vec::new(),
             accepted_certs: Vec::new(),
+            legacy_tls: Vec::new(),
             bouncer: Bouncer::default(),
             use_proxy: true,
             autojoin: Vec::new(),
@@ -286,6 +289,7 @@ impl Config {
                 use_system_cas: gb(&kf, &ng, "use_system_cas", true),
                 trusted_certs: glist(&kf, &ng, "trusted_certs"),
                 accepted_certs: glist(&kf, &ng, "accepted_certs"),
+                legacy_tls: glist(&kf, &ng, "legacy_tls_servers"),
                 bouncer: Bouncer {
                     enabled: gb(&kf, &ng, "bouncer_enabled", false),
                     host: gs(&kf, &ng, "bouncer_host"),
@@ -350,6 +354,7 @@ impl Config {
             kf.set_boolean(&ng, "use_system_cas", n.use_system_cas);
             kf.set_string(&ng, "trusted_certs", &n.trusted_certs.join("\n"));
             kf.set_string(&ng, "accepted_certs", &n.accepted_certs.join("\n"));
+            kf.set_string(&ng, "legacy_tls_servers", &n.legacy_tls.join("\n"));
             kf.set_boolean(&ng, "use_proxy", n.use_proxy);
             kf.set_string(&ng, "autojoin", &n.autojoin.join("\n"));
             let b = &n.bouncer;
@@ -498,6 +503,7 @@ mod tests {
             },
             trusted_certs: vec!["/a/b.pem".into(), "/c;d.pem".into()],
             accepted_certs: vec!["MIIBaw==".into(), "MIIBbA==".into()],
+            legacy_tls: vec!["irc.example.org:6697".into(), "[2001:db8::1]:6697".into()],
             bouncer: Bouncer {
                 enabled: true,
                 host: "znc.local".into(),

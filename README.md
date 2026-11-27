@@ -35,6 +35,13 @@ help on getting connected.
   certificate and asks whether to trust it. A trusted certificate is remembered for that
   network (exactly that certificate; a network can have several), and the Networks
   window lists them so they can be removed.
+- Legacy TLS for old servers. Some servers accept only TLS that rustls does not
+  implement, such as TLS 1.2 with RSA key exchange (no forward secrecy). When a server
+  refuses every handshake rustls offers, IrcGoo asks whether to retry that server with
+  GnuTLS (GTK's TLS library, through GIO). Nothing of GnuTLS is used before you agree.
+  The answer is remembered for that server (host and port) on that network, and the
+  Networks window lists such servers so they can be removed. Certificates are checked
+  the same way as with rustls, including the prompt above.
 - IRC bouncer support (ZNC style `PASS user/network:password`).
 - Per-network nick, username and real name overrides.
 - Channel nick lists, sorted by rank. A context menu offers private chat, whois, op/deop,
@@ -177,6 +184,7 @@ message that begins with `/`.
 - Dependencies are deliberately few: `gtk4` (only APIs up to GTK 4.8, so it runs on
   Debian bookworm and PureOS), `rustls` with the `ring` backend, and `rustls-native-certs`.
   (`rustls-webpki`, part of rustls, is also named directly to recognize its errors.)
+  Legacy TLS uses GIO, which comes with GTK, and GnuTLS through glib-networking.
   Configuration uses GLib's key file support, and SOCKS5, SASL, IRC parsing and the
   little X.509 decoding needed to show a certificate are implemented here.
 - libadwaita is not used yet. The layout is meant to become adaptive for Linux phones
